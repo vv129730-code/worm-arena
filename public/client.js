@@ -290,6 +290,15 @@ function pruneFarFood() {
 
 requestAnimationFrame(frame);
 
+// Mirror of server radiusAt() (src/game/worm.js) — keep in sync!
+function radiusAt(len) {
+  const SOFT = 240, K1 = 3.2, K2 = 0.22;
+  const over = Math.max(0, len - 10);
+  if (over <= SOFT) return 9 + K1 * Math.sqrt(over);
+  const base = 9 + K1 * Math.sqrt(SOFT);
+  return base + K2 * Math.log1p((over - SOFT) / 40);
+}
+
 function updateCamera() {
   const target = worms.get(myId);
   if (target && !dead) {
@@ -297,7 +306,7 @@ function updateCamera() {
     cam.y = target.y;
   }
   const len = target ? target.len : hudLen;
-  const r = 9 + 3.2 * Math.sqrt(Math.max(0, len - 10));
+  const r = radiusAt(len);
   const targetZoom = Math.max(0.35, Math.min(1.1, 42 / (r + 26)));
   cam.zoom += (targetZoom - cam.zoom) * 0.05;
 }
@@ -394,7 +403,7 @@ function render(now) {
 }
 
 function drawWorm(w, now) {
-  const r = 9 + 3.2 * Math.sqrt(Math.max(0, w.len - 10));
+  const r = radiusAt(w.len);
   const h = w.history;
   if (h.length === 0) return;
 

@@ -69,13 +69,34 @@ class World {
   }
 
   spawnFood() {
-    const a = Math.random() * Math.PI * 2;
-    const r = Math.sqrt(Math.random()) * (CFG.ARENA_R - 60);
+    let x, y;
+    // Most respawns cluster near existing food so eaten areas refill quickly;
+    // the rest spread anywhere so the map never develops dead zones.
+    if (this.food.size > 0 && Math.random() < CFG.FOOD_RESPAWN_NEAR_FRAC) {
+      const foods = [...this.food.values()];
+      const anchor = foods[(Math.random() * foods.length) | 0];
+      const a = Math.random() * Math.PI * 2;
+      const d = Math.random() * CFG.ARENA_R * CFG.FOOD_RESPAWN_NEAR_DIST;
+      x = anchor.x + Math.cos(a) * d;
+      y = anchor.y + Math.sin(a) * d;
+    } else {
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.sqrt(Math.random()) * (CFG.ARENA_R - 60);
+      x = Math.cos(a) * r;
+      y = Math.sin(a) * r;
+    }
+    // Keep inside the arena circle
+    const dist = Math.hypot(x, y);
+    if (dist > CFG.ARENA_R - 60) {
+      const k = (CFG.ARENA_R - 60) / (dist || 1e-9);
+      x *= k;
+      y *= k;
+    }
     const id = this.nextFoodId++;
     this.food.set(id, {
       id,
-      x: Math.cos(a) * r,
-      y: Math.sin(a) * r,
+      x,
+      y,
       r: CFG.FOOD_R + Math.random() * 2,
       v: CFG.FOOD_VALUE + (Math.random() < 0.08 ? 4 : 0), // 8% big food
       hue: Math.floor(Math.random() * 360),

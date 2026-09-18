@@ -23,8 +23,24 @@ function turnRateAt(len) {
   return CFG.TURN_RATE - (CFG.TURN_RATE - CFG.TURN_RATE_MIN) * t;
 }
 
+// Thickness: sqrt growth up to RADIUS_SOFT, then a much slower log phase so
+// huge worms still thicken but never balloon (keeps lanes navigable).
 function radiusAt(len) {
-  return 9 + 3.2 * Math.sqrt(Math.max(0, len - 10));
+  const over = Math.max(0, len - 10);
+  if (over <= CFG.RADIUS_SOFT) {
+    return 9 + CFG.RADIUS_K1 * Math.sqrt(over);
+  }
+  const base = 9 + CFG.RADIUS_K1 * Math.sqrt(CFG.RADIUS_SOFT);
+  return base + CFG.RADIUS_K2 * Math.log1p((over - CFG.RADIUS_SOFT) / 40);
+}
+
+// Growth value taper: full value below GROWTH_SOFT_CAP, easing down to
+// GROWTH_TAPER_MIN by ~10x the cap. Score/length keep rising, just slower.
+function growthWeight(len) {
+  const cap = CFG.GROWTH_SOFT_CAP;
+  if (len <= cap) return 1;
+  const t = 1 - Math.exp(-(len - cap) / (cap * 2));
+  return 1 - t * (1 - CFG.GROWTH_TAPER_MIN);
 }
 
 function newWorm(id, name, hue, skin, x, y) {
@@ -114,7 +130,8 @@ function stepHeading(w, dt) {
 }
 
 function gain(w, lenGain) {
-  w.len = Math.min(w.len + lenGain, CFG.MAX_LEN);
+  const weighted = lenGain * growthWeight(w.len);
+  w.len = Math.min(w.len + weighted, CFG.MAX_LEN);
   w.score = Math.max(w.score, Math.floor(w.len));
 }
 
@@ -135,6 +152,7 @@ module.exports = {
   speedAt,
   turnRateAt,
   radiusAt,
+  growthWeight,
   newWorm,
   advance,
   trimPath,

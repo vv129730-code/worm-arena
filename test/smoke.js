@@ -89,6 +89,35 @@ assert.ok(/^\d{6}$/.test(randomCode()));
 assert.ok(radiusAt(10) < radiusAt(200), 'radius grows with length');
 assert.ok(speedAt(10) > speedAt(300), 'speed drops slightly with length');
 
+// --- growth/curve economy (post-taper tuning) ---
+const { growthWeight } = require('../src/game/worm');
+const { World } = require('../src/game/world');
+
+// 1) Length must keep growing past the old 500 cap (soft-cap taper, no hard stop)
+const wLong = { len: 700, score: 0 };
+require('../src/game/worm').gain(wLong, 100);
+assert.ok(wLong.len > 700, `length grows past 700 (got ${wLong.len})`);
+assert.ok(wLong.len < 800, 'taper slows growth beyond soft cap');
+
+// 2) Radius keeps creeping up but slowly at giant sizes (log phase)
+const rSoft = radiusAt(240);   // taper boundary ~58
+const rGiant = radiusAt(5000); // should be well under the old sqrt curve (~203)
+assert.ok(rGiant > rSoft, 'giant worm still thicker than small');
+assert.ok(rGiant < 110, `giant radius stays navigable (got ${rGiant.toFixed(1)})`);
+
+// 3) Food respawn clusters near surviving food (fast local refill)
+const world2 = new World();
+world2.ensureFood();
+const first = [...world2.food.values()][0];
+// Remove all food except one anchor, then respawn a batch
+for (const [id, f] of world2.food) { if (f.id !== first.id) world2.food.delete(id); }
+for (let i = 0; i < 200; i++) world2.spawnFood();
+let near = 0;
+for (const f of world2.food.values()) {
+  if (Math.hypot(f.x - first.x, f.y - first.y) < 1200) near++;
+}
+assert.ok(near > 60, `respawn clusters near survivors (near=${near}/200)`);
+
 // --- ghost-food fix: a deletion by one eater must reach every other client ---
 const room6 = new Room(4);
 const e1 = room6.addClient({ readyState: 1, sent: [], send(d) { this.sent.push(d); } }, 'Eater', 0, false);
