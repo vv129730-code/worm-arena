@@ -1,0 +1,18 @@
+{
+  "name": "worm-arena-private-mp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Private multiplayer worm game (slither/Snake vs Worms style) - room code protected, configurable player limit, LAN/internet ready",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/smoke.js",
+    "check": "node --check server.js && node --check src/game/constants.js && node --check src/game/worm.js && node --check src/game/world.js && node --check src/game/room.js && node --check test/smoke.js && node --check test/bot.js && node --check public/client.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

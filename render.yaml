@@ -1,0 +1,16 @@
+# Render Blueprint — Worm Arena
+# Deploy via render.com -> New -> Blueprint (or New -> Web Service and select this repo).
+# Settings below auto-fill the dashboard form; you only press "Create".
+services:
+  - type: web
+    name: worm-arena
+    runtime: node
+    plan: free
+    region: singapore          # fastest free region for India
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/stats
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Render injects PORT automatically; server.js already reads process.env.PORT.
