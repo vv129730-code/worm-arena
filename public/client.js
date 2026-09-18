@@ -36,9 +36,12 @@ let lastSnapTick = 0;
 let dead = false;
 let fps = 60;
 
+// Capped DPR: full devicePixelRatio on hi-dpi screens = 4x pixel fill = lag.
+let DPR = Math.min(window.devicePixelRatio || 1, 1.5);
 function resize() {
-  cv.width = window.innerWidth * devicePixelRatio;
-  cv.height = window.innerHeight * devicePixelRatio;
+  DPR = Math.min(window.devicePixelRatio || 1, 1.5);
+  cv.width = window.innerWidth * DPR;
+  cv.height = window.innerHeight * DPR;
   cv.style.width = window.innerWidth + 'px';
   cv.style.height = window.innerHeight + 'px';
 }
@@ -48,17 +51,156 @@ resize();
 // ---------- lobby UI ----------
 function show(el, on) { el.classList.toggle('hidden', !on); }
 
-$('tab-host').addEventListener('click', () => {
-  $('tab-host').classList.add('active');
-  $('tab-join').classList.remove('active');
-  show($('pane-host'), true);
-  show($('pane-join'), false);
+// Selected snake color (hue 0-359), persisted locally
+let myHue = parseInt(localStorage.getItem('wa_hue') || '130', 10);
+if (!Number.isFinite(myHue)) myHue = 130;
+
+const SWATCH_HUES = [0, 25, 45, 130, 160, 200, 230, 280, 320, 350, 90, 55];
+
+function buildSwatches() {
+  const wrap = $('color-swatches');
+  wrap.innerHTML = '';
+  for (const h of SWATCH_HUES) {
+    const b = document.createElement('button');
+    b.className = 'swatch' + (h === myHue ? ' sel' : '');
+    b.style.background = `hsl(${h},85%,55%)`;
+    b.dataset.hue = h;
+    b.addEventListener('click', () => {
+      myHue = h;
+      localStorage.setItem('wa_hue', String(myHue));
+      $('hue-slider').value = h;
+      $('hue-val').textContent = h;
+      buildSwatches();
+      drawPreview();
+    });
+    wrap.appendChild(b);
+  }
+}
+
+// Animated worm preview in the inventory card
+function drawPreview() {
+  const c = $('snake-preview');
+  const x2 = c.getContext('2d');
+  const W = c.width, H = c.height;
+  x2.clearRect(0, 0, W, H);
+  const r = 16;
+  const pts = [];
+  const t = performance.now() / 600;
+  for (let i = 0; i < 14; i++) {
+    pts.push([W * 0.82 - i * 20, H / 2 + Math.sin(t + i * 0.55) * 14]);
+  }
+  const stroke = (ptsArr, w, col) => {
+    x2.lineCap = 'round'; x2.lineJoin = 'round';
+    x2.strokeStyle = col; x2.lineWidth = w;
+    x2.beginPath();
+    x2.moveTo(ptsArr[0][0], ptsArr[0][1]);
+    for (let i = 1; i < ptsArr.length; i++) x2.lineTo(ptsArr[i][0], ptsArr[i][1]);
+    x2.stroke();
+  };
+  stroke(pts, r * 2 + 4, `hsla(${myHue},70%,18%,0.95)`);
+  stroke(pts, r * 2, `hsl(${myHue},85%,60%)`);
+  x2.save();
+  x2.translate(0, -r * 0.42);
+  stroke(pts, r * 0.75, `hsla(${myHue},95%,80%,0.4)`);
+  x2.restore();
+  // eyes on the head
+  const dir = Math.atan2(pts[1][1] - pts[0][1], pts[1][0] - pts[0][0]);
+  for (const s of [-1, 1]) {
+    const ex = pts[0][0] + Math.cos(dir) * 4 + Math.cos(dir + s * Math.PI / 2) * r * 0.5;
+    const ey = pts[0][1] + Math.sin(dir) * 4 + Math.sin(dir + s * Math.PI / 2) * r * 0.5;
+    x2.fillStyle = '#fff';
+    x2.beginPath(); x2.arc(ex, ey, r * 0.34, 0, Math.PI * 2); x2.fill();
+    x2.fillStyle = '#101018';
+    x2.beginPath(); x2.arc(ex, ey, r * 0.17, 0, Math.PI * 2); x2.fill();
+  }
+}
+
+// Coming-soon toast
+let soonTimer = null;
+function soonToast(name) {
+  let el = document.getElementById('soon-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'soon-toast';
+    document.body.appendChild(el);
+  }
+  el.textContent = `🔒 ${name} — Coming soon!`;
+  el.classList.add('show');
+  clearTimeout(soonTimer);
+  soonTimer = setTimeout(() => el.classList.remove('show'), 1800);
+}
+
+// Bottom nav + hero menu wiring — EVENT DELEGATION (single listener, never
+// depends on per-button attach order; robust against load timing)
+function initLobby() {
+  buildSwatches();
+  $('hue-slider').value = myHue;
+  $('hue-val').textContent = myHue;
+  $('lb-pname').textContent = localStorage.getItem('wa_name') || 'Player';
+
+  const previewLoop = () => {
+    if (!$('inventory').classList.contains('hidden')) drawPreview();
+    requestAnimationFrame(previewLoop);
+  };
+  requestAnimationFrame(previewLoop);
+}
+initLobby();
+
+// One delegated click handler for ALL lobby interactions
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('button');
+  if (!t) return;
+  const id = t.id;
+  if (t.classList.contains('swatch')) {
+    myHue = parseInt(t.dataset.hue, 10);
+    localStorage.setItem('wa_hue', String(myHue));
+    $('hue-slider').value = myHue;
+    $('hue-val').textContent = myHue;
+    buildSwatches();
+    drawPreview();
+    return;
+  }
+  switch (id) {
+    case 'nav-inventory':
+      show($('inventory'), true);
+      document.querySelectorAll('.lb-nav-btn').forEach((b) => b.classList.remove('active'));
+      t.classList.add('active');
+      break;
+    case 'inv-close':
+      show($('inventory'), false);
+      document.querySelectorAll('.lb-nav-btn').forEach((b) => b.classList.remove('active'));
+      document.querySelector('.lb-nav-btn[data-nav=home]').classList.add('active');
+      break;
+    case 'lb-play':
+      $('host-name').value = localStorage.getItem('wa_name') || 'Player';
+      $('host-max').value = '10';
+      hostGame();
+      break;
+    case 'lb-create':
+      show($('lb-hostform'), true);
+      show($('lb-joinform'), false);
+      $('host-name').focus();
+      break;
+    case 'lb-join':
+      show($('lb-joinform'), true);
+      show($('lb-hostform'), false);
+      $('join-name').focus();
+      break;
+    default:
+      if (t.dataset && t.dataset.soon) soonToast(t.dataset.soon);
+      break;
+  }
 });
-$('tab-join').addEventListener('click', () => {
-  $('tab-join').classList.add('active');
-  $('tab-host').classList.remove('active');
-  show($('pane-join'), true);
-  show($('pane-host'), false);
+
+// Delegated slider input
+document.addEventListener('input', (e) => {
+  if (e.target && e.target.id === 'hue-slider') {
+    myHue = parseInt(e.target.value, 10);
+    $('hue-val').textContent = myHue;
+    localStorage.setItem('wa_hue', String(myHue));
+    buildSwatches();
+    drawPreview();
+  }
 });
 
 function connect() {
@@ -87,12 +229,13 @@ function send(obj) {
 
 async function hostGame() {
   const name = $('host-name').value.trim() || 'Host';
+  localStorage.setItem('wa_name', name);
   const max = Math.max(2, Math.min(50, parseInt($('host-max').value, 10) || 10));
   $('lobby-status').textContent = 'Connecting…';
   try {
     await connect();
     ws.onmessage = onMessage;
-    send({ t: 'create', name, maxPlayers: max, skin: 0 });
+    send({ t: 'create', name, maxPlayers: max, skin: 0, hue: myHue });
   } catch (e) {
     $('lobby-status').textContent = e.message;
   }
@@ -100,6 +243,7 @@ async function hostGame() {
 
 async function joinGame() {
   const name = $('join-name').value.trim() || 'Player';
+  localStorage.setItem('wa_name', name);
   const code = $('join-code').value.trim();
   if (!/^\d{6}$/.test(code)) {
     $('lobby-status').textContent = 'Room code 6 digits ka hona chahiye.';
@@ -109,7 +253,7 @@ async function joinGame() {
   try {
     await connect();
     ws.onmessage = onMessage;
-    send({ t: 'join', name, code, skin: 0 });
+    send({ t: 'join', name, code, skin: 0, hue: myHue });
   } catch (e) {
     $('lobby-status').textContent = e.message;
   }
@@ -131,6 +275,7 @@ function onMessage(ev) {
       dead = false;
       document.body.classList.add('playing');
       show($('lobby'), false);
+      show($('inventory'), false);
       show($('hud'), true);
       show($('death'), false);
       show($('room-pill'), true);
@@ -224,20 +369,64 @@ window.addEventListener('keyup', (e) => {
 });
 cv.addEventListener('contextmenu', (e) => e.preventDefault());
 
-// touch support
-cv.addEventListener('touchstart', (e) => {
-  mouse.x = e.touches[0].clientX; mouse.y = e.touches[0].clientY; mouse.down = true;
-  e.preventDefault();
-}, { passive: false });
-cv.addEventListener('touchmove', (e) => {
-  mouse.x = e.touches[0].clientX; mouse.y = e.touches[0].clientY;
-  e.preventDefault();
-}, { passive: false });
-cv.addEventListener('touchend', () => { mouse.down = false; });
+// touch detection + mobile joystick steering
+const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+if (isTouch) document.body.classList.add('touch');
+
+let joyDir = null;      // last joystick heading (rad); persists when finger lifts
+let touchBoost = false;
+let joyTouchId = null;  // identifier of the finger controlling the stick
+
+if (isTouch) {
+  document.body.classList.add('touch');
+  // CRITICAL: the #joy div ships with class="hidden" (.hidden = display:none
+  // !important) which would permanently beat the body.playing.touch CSS rule.
+  // Remove it once — CSS gates visibility from here on.
+  $('joy').classList.remove('hidden');
+  const joyEl = $('joy');
+  const base = $('joy-base');
+  const stick = $('joy-stick');
+  const MAX_R = 44;
+
+  function joyHandle(t) {
+    joyTouchId = t.identifier;
+    const rect = base.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+    let dx = t.clientX - cx, dy = t.clientY - cy;
+    const d = Math.hypot(dx, dy);
+    if (d > MAX_R) { dx = dx / d * MAX_R; dy = dy / d * MAX_R; }
+    stick.style.transform = `translate(${dx}px, ${dy}px)`;
+    if (Math.hypot(dx, dy) > 8) joyDir = Math.atan2(dy, dx);
+  }
+  base.addEventListener('touchstart', (e) => { joyHandle(e.changedTouches[0]); e.preventDefault(); }, { passive: false });
+  base.addEventListener('touchmove', (e) => {
+    // Use the touch that STARTED on the base (changedTouches), not touches[0] —
+    // otherwise pressing BOOST with a second finger yanks the stick.
+    for (const t of e.changedTouches) { if (joyTouchId !== null && t.identifier === joyTouchId) joyHandle(t); }
+    e.preventDefault();
+  }, { passive: false });
+  const endTouch = (e) => {
+    for (const t of e.changedTouches) {
+      if (joyTouchId !== null && t.identifier === joyTouchId) {
+        joyTouchId = null;
+        stick.style.transform = 'translate(0,0)'; // finger lifted: keep last heading
+      }
+    }
+  };
+  base.addEventListener('touchend', endTouch);
+  base.addEventListener('touchcancel', endTouch);
+
+  const boostBtn = $('joy-boost');
+  boostBtn.addEventListener('touchstart', (e) => { touchBoost = true; boostBtn.classList.add('on'); e.preventDefault(); }, { passive: false });
+  const endBoost = () => { touchBoost = false; boostBtn.classList.remove('on'); };
+  boostBtn.addEventListener('touchend', endBoost);
+  boostBtn.addEventListener('touchcancel', endBoost);
+}
 
 setInterval(() => {
   if (!ws || ws.readyState !== 1 || myId === null || dead) return;
-  send({ t: 'input', dir: aimDir(), boost: (mouse.down || spaceDown), vr: viewRadius() });
+  const dir = (isTouch && joyDir !== null) ? joyDir : aimDir();
+  send({ t: 'input', dir, boost: (mouse.down || spaceDown || touchBoost), vr: viewRadius() });
 }, 1000 / CFG.TICK_HZ);
 
 // Current half-diagonal of the visible world area (world units), +margin.
@@ -314,23 +503,30 @@ function updateCamera() {
 function updateHud() {
   const me = worms.get(myId);
   if (me) hudLen = Math.floor(me.len);
-  $('hud-len').textContent = hudLen;
-  $('hud-players').textContent = `${worms.size}/${maxPlayers || '?'}`;
-  const rank = leaderboard.findIndex((e) => e.id === myId) + 1;
-  $('hud-rank').textContent = rank > 0 ? `#${rank}` : '–';
   const meEntry = leaderboard.find((e) => e.id === myId);
   $('hud-kills').textContent = meEntry ? meEntry.kills : 0;
 
+  // PERF: rebuild DOM only when content actually changed — per-frame innerHTML
+  // writes were the #1 stutter source (layout thrash at 60fps).
   const ol = $('lb-list');
-  ol.innerHTML = leaderboard.slice(0, 10).map((e, i) =>
-    `<li${e.id === myId ? ' class="me"' : ''}><span>${i + 1}. ${escapeHtml(e.name)}</span><b>${e.score}</b></li>`
-  ).join('');
+  const lbKey = leaderboard.slice(0, 10).map((e) => `${e.id},${e.score}`).join('|');
+  if (lbKey !== lastLbKey) {
+    lastLbKey = lbKey;
+    ol.innerHTML = leaderboard.slice(0, 10).map((e, i) =>
+      `<li${e.id === myId ? ' class="me"' : ''}><span>${i + 1}. ${escapeHtml(e.name)}</span><b>${e.score}</b></li>`
+    ).join('');
+  }
 
   const feed = $('kill-feed');
-  feed.innerHTML = kills.slice(-4).map((k) =>
-    `<div class="feed-line">☠ ${escapeHtml(k.killerName)} ➜ ${escapeHtml(k.victimName)}</div>`
-  ).join('');
+  const feedKey = kills.map((k) => `${k.killerName}>${k.victimName}`).join('|');
+  if (feedKey !== lastFeedKey) {
+    lastFeedKey = feedKey;
+    feed.innerHTML = kills.slice(-4).map((k) =>
+      `<div class="feed-line">☠ ${escapeHtml(k.killerName)} ➜ ${escapeHtml(k.victimName)}</div>`
+    ).join('');
+  }
 }
+let lastLbKey = '', lastFeedKey = '';
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -341,8 +537,8 @@ const ARENA_R = 3800;
 
 function worldToScreen(x, y) {
   return [
-    (x - cam.x) * cam.zoom + cv.width / (2 * devicePixelRatio) * devicePixelRatio,
-    (y - cam.y) * cam.zoom + cv.height / (2 * devicePixelRatio) * devicePixelRatio,
+    (x - cam.x) * cam.zoom + cv.width / 2,
+    (y - cam.y) * cam.zoom + cv.height / 2,
   ];
 }
 
@@ -353,8 +549,8 @@ function render(now) {
   ctx.fillRect(0, 0, w, h);
 
   ctx.save();
-  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
-  const cw = w / devicePixelRatio, ch = h / devicePixelRatio;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const cw = w / DPR, ch = h / DPR;
   ctx.translate(cw / 2, ch / 2);
   ctx.scale(cam.zoom, cam.zoom);
   ctx.translate(-cam.x, -cam.y);
@@ -378,28 +574,48 @@ function render(now) {
   ctx.lineWidth = 10 / cam.zoom;
   ctx.stroke();
 
-  // food
+  // food — EMOJI fruits from a SPRITE CACHE: each emoji is rendered to an
+  // offscreen canvas once, then blitted. Setting ctx.font + fillText for every
+  // food every frame was the #2 lag source (font parse ~hundreds/frame).
+  // Off-screen items are culled cheaply.
+  const halfW = cw / 2 / cam.zoom + 60, halfH = ch / 2 / cam.zoom + 60;
+  const camL = cam.x - halfW, camR = cam.x + halfW, camT = cam.y - halfH, camB = cam.y + halfH;
+  const tSec = now / 1000;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
   for (const f of foods.values()) {
-    ctx.fillStyle = `hsl(${f.h},90%,60%)`;
-    ctx.beginPath();
-    ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2);
-    ctx.fill();
+    if (f.x < camL || f.x > camR || f.y < camT || f.y > camB) continue;
+    const pulse = 1 + 0.1 * Math.sin(tSec * 2.2 + f.i % 10);
+    const r = f.r * pulse;
+    const em = (f.v >= 5) ? '\u2B50' : FOOD_EMOJIS[f.i % FOOD_EMOJIS.length];
+    const s = r * 2.6;
+    ctx.drawImage(emojiSprite(em), f.x - s / 2, f.y - s / 2, s, s);
   }
 
-  // pellets
+  // pellets — death drops: emoji only, no glow
   for (const p of pellets.values()) {
-    ctx.fillStyle = `hsl(${p.h},85%,65%)`;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-    ctx.fill();
+    if (p.x < camL || p.x > camR || p.y < camT || p.y > camB) continue;
+    const em = PELLET_EMOJI[p.i % PELLET_EMOJI.length];
+    const s = p.r * 2.4;
+    ctx.drawImage(emojiSprite(em), p.x - s / 2, p.y - s / 2, s, s);
   }
 
-  // worms
+  // worms — cull off-screen bodies (minimap still shows them)
   for (const w of worms.values()) {
+    const wr = radiusAt(w.len) + 40;
+    if (w.id !== myId && (w.x < camL - wr || w.x > camR + wr || w.y < camT - wr || w.y > camB + wr)) continue;
     drawWorm(w, now);
   }
 
   ctx.restore();
+}
+
+// Stroke a polyline through pts ([[x,y],...]) using current stroke settings.
+function strokePath(pts) {
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.stroke();
 }
 
 function drawWorm(w, now) {
@@ -407,59 +623,85 @@ function drawWorm(w, now) {
   const h = w.history;
   if (h.length === 0) return;
 
-  ctx.lineWidth = r * 2;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  ctx.strokeStyle = w.protect ? `hsla(${w.hue},80%,60%,0.45)` : `hsl(${w.hue},80%,55%)`;
-
-  // Body path: walk back from the head through history until we've laid out
-  // len*PATH_PER_LEN units, then draw a smooth polyline.
+  // Build the visible body polyline once (head -> tail)
   const need = w.len * 3;
-  ctx.beginPath();
-  ctx.moveTo(w.x, w.y);
+  const pts = [[w.x, w.y]];
   let drawn = 0;
   let px = w.x, py = w.y;
   for (let i = h.length - 1; i >= 0 && drawn < need; i--) {
     const p = h[i];
     const d = Math.hypot(p.x - px, p.y - py);
     if (d > 200) break; // history gap (respawn) — stop here
-    ctx.lineTo(p.x, p.y);
+    pts.push([p.x, p.y]);
     drawn += d;
     px = p.x; py = p.y;
   }
-  if (drawn < 1) ctx.lineTo(w.x - Math.cos(w.dir) * r, w.y - Math.sin(w.dir) * r);
-  ctx.stroke();
+  if (pts.length < 2) pts.push([w.x - Math.cos(w.dir) * r, w.y - Math.sin(w.dir) * r]);
 
-  // boosting glow
-  if (w.boost) {
-    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-    ctx.lineWidth = r * 2.3;
-    ctx.beginPath();
-    ctx.arc(w.x, w.y, r * 0.4, 0, Math.PI * 2);
-    ctx.stroke();
+  const boostGlow = w.boost ? 1 : 0;
+
+  // Layer 1: dark outline (slightly wider) for separation from background
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = w.protect ? `hsla(${w.hue},80%,60%,0.45)` : `hsla(${w.hue},70%,18%,0.9)`;
+  ctx.lineWidth = r * 2 + 5;
+  strokePath(pts);
+
+  // Layer 2: main body (bright core color)
+  ctx.strokeStyle = w.protect ? `hsla(${w.hue},80%,60%,0.5)` : `hsl(${w.hue},85%,60%)`;
+  ctx.lineWidth = r * 2;
+  strokePath(pts);
+
+  // Layer 3: highlight stripe along the top edge — gives a round, lit look.
+  // Offset the same path toward the head direction's left by ~35% of radius.
+  if (!w.protect) {
+    ctx.strokeStyle = `hsla(${w.hue},95%,78%,0.35)`;
+    ctx.lineWidth = r * 0.8;
+    const off = r * 0.45;
+    ctx.save();
+    ctx.translate(Math.cos(w.dir - Math.PI / 2) * off, Math.sin(w.dir - Math.PI / 2) * off);
+    strokePath(pts);
+    ctx.restore();
   }
 
-  // eyes
+  // Boost trail: fading circles at the tail while boosting
+  if (boostGlow && pts.length > 2) {
+    for (let k = 1; k <= 3; k++) {
+      const idx = Math.max(0, Math.min(pts.length - 1, pts.length - 1 - k * 4));
+      const [tx, ty] = pts[idx];
+      ctx.fillStyle = `hsla(${w.hue},95%,70%,${0.22 / k})`;
+      ctx.beginPath();
+      ctx.arc(tx, ty, r * (1.1 + k * 0.35), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Eyes: white sclera + colored iris + dark pupil (looks alive)
   const hx = w.x, hy = w.y;
-  ctx.fillStyle = '#fff';
   for (const s of [-1, 1]) {
+    const ex = hx + Math.cos(w.dir) * r * 0.45 + Math.cos(w.dir + s * Math.PI / 2) * r * 0.5;
+    const ey = hy + Math.sin(w.dir) * r * 0.45 + Math.sin(w.dir + s * Math.PI / 2) * r * 0.5;
+    ctx.fillStyle = '#fff';
     ctx.beginPath();
-    ctx.arc(
-      hx + Math.cos(w.dir) * r * 0.45 + Math.cos(w.dir + s * Math.PI / 2) * r * 0.5,
-      hy + Math.sin(w.dir) * r * 0.45 + Math.sin(w.dir + s * Math.PI / 2) * r * 0.5,
-      r * 0.3, 0, Math.PI * 2
-    );
+    ctx.arc(ex, ey, r * 0.34, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = `hsl(${(w.hue + 40) % 360},90%,45%)`;
+    ctx.beginPath();
+    ctx.arc(ex + Math.cos(w.dir) * r * 0.1, ey + Math.sin(w.dir) * r * 0.1, r * 0.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#101018';
+    ctx.beginPath();
+    ctx.arc(ex + Math.cos(w.dir) * r * 0.14, ey + Math.sin(w.dir) * r * 0.14, r * 0.1, 0, Math.PI * 2);
     ctx.fill();
   }
-  ctx.fillStyle = '#111';
-  for (const s of [-1, 1]) {
+
+  // Spawn protection shimmer ring
+  if (w.protect) {
+    ctx.strokeStyle = `hsla(${w.hue},90%,75%,${0.5 + 0.3 * Math.sin(now / 120)})`;
+    ctx.lineWidth = 2.5;
     ctx.beginPath();
-    ctx.arc(
-      hx + Math.cos(w.dir) * r * 0.6 + Math.cos(w.dir + s * Math.PI / 2) * r * 0.5,
-      hy + Math.sin(w.dir) * r * 0.6 + Math.sin(w.dir + s * Math.PI / 2) * r * 0.5,
-      r * 0.14, 0, Math.PI * 2
-    );
-    ctx.fill();
+    ctx.arc(hx, hy, r + 9, 0, Math.PI * 2);
+    ctx.stroke();
   }
 
   // name
@@ -467,6 +709,27 @@ function drawWorm(w, now) {
   ctx.font = `${13 / cam.zoom}px system-ui, sans-serif`;
   ctx.textAlign = 'center';
   ctx.fillText(w.id === myId ? 'You' : w.name || `W${w.id}`, hx, hy - r - 8 / cam.zoom);
+}
+
+// Food emojis cycled by food id (server sends i, x, y, r, v, h per item)
+const FOOD_EMOJIS = ['\uD83C\uDF4E', '\uD83C\uDF4A', '\uD83C\uDF4B', '\uD83C\uDF4F', '\uD83C\uDF47', '\uD83C\uDF53', '\uD83C\uDF52', '\uD83C\uDF51', '\uD83E\uDD5D', '\uD83C\uDF49'];
+const PELLET_EMOJI = ['\uD83E\uDD69', '\uD83C\uDF67', '\uD83C\uDF6A'];
+
+// PERF: emoji sprite cache — render each emoji ONCE to an offscreen canvas,
+// then drawImage() every frame (GPU blit, no font parsing).
+const emojiCache = new Map();
+function emojiSprite(em) {
+  let c = emojiCache.get(em);
+  if (c) return c;
+  c = document.createElement('canvas');
+  c.width = 72; c.height = 72;
+  const g = c.getContext('2d');
+  g.font = '58px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(em, 36, 39);
+  emojiCache.set(em, c);
+  return c;
 }
 
 function renderMinimap() {
@@ -508,7 +771,7 @@ $('btn-respawn').addEventListener('click', () => {
   dead = false;
   document.body.classList.add('playing');
   show($('room-pill'), true);
-  send({ t: 'respawn', name: $('join-name').value.trim() || $('host-name').value.trim() || 'Player', skin: 0 });
+  send({ t: 'respawn', name: $('join-name').value.trim() || $('host-name').value.trim() || 'Player', skin: 0, hue: myHue });
 });
 $('btn-lobby').addEventListener('click', () => {
   show($('death'), false);

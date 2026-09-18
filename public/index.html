@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Worm Arena — Private Multiplayer</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -10,45 +10,95 @@
 <canvas id="game"></canvas>
 <canvas id="minimap" width="150" height="150"></canvas>
 
+<!-- Mobile joystick (touch devices only, shown while playing) -->
+<div id="joy" class="hidden">
+  <div id="joy-base">
+    <div id="joy-stick"></div>
+  </div>
+  <button id="joy-boost">BOOST</button>
+</div>
+
 <div id="hud" class="hidden">
   <div id="score-box">
-    <div class="score-line"><span class="lbl">Length</span><b id="hud-len">10</b></div>
-    <div class="score-line"><span class="lbl">Rank</span><b id="hud-rank">–</b></div>
-    <div class="score-line"><span class="lbl">Players</span><b id="hud-players">1</b></div>
-    <div class="score-line"><span class="lbl">Kills</span><b id="hud-kills">0</b></div>
+    <div class="score-line"><span class="lbl">☠</span><b id="hud-kills">0</b></div>
   </div>
   <div id="kill-feed"></div>
-  <div id="room-pill" class="hidden">Room code <b id="room-code">------</b><span class="pill-hint">click to copy</span></div>
+  <div id="room-pill" class="hidden">Room <b id="room-code">------</b><span class="pill-hint">tap to copy</span></div>
   <div id="lb-box">
     <h3>Leaderboard</h3>
     <ol id="lb-list"></ol>
   </div>
 </div>
 
-<div id="lobby" class="panel">
-  <h1>🐍 Worm Arena</h1>
-  <p class="tag">Private multiplayer — sirf room code se entry, koi strangers nahi.</p>
+<div id="lobby">
+  <div class="lb-hero">
+    <img src="lobby-bg.png" alt="" class="lb-bg">
+    <div class="lb-vignette"></div>
 
-  <div class="tabs">
-    <button id="tab-host" class="tab active">Host</button>
-    <button id="tab-join" class="tab">Join</button>
+    <div class="lb-top">
+      <div class="lb-player">
+        <div class="lb-avatar">🐍</div>
+        <div>
+          <div class="lb-pname" id="lb-pname">Player</div>
+          <div class="lb-rank">🥉 Bronze III</div>
+        </div>
+      </div>
+      <div class="lb-currency">
+        <span class="coin">🪙 2,450</span>
+        <span class="gem">💎 120</span>
+      </div>
+    </div>
+
+    <h1 class="lb-title">SNAKE<br><span>ARENA</span></h1>
+    <p class="lb-tag">EAT · GROW · DOMINATE</p>
+
+    <div class="lb-mid">
+      <div class="lb-menu">
+        <button id="lb-play" class="lb-btn play">▶ PLAY<small>CLASSIC MODE</small></button>
+        <button id="lb-create" class="lb-btn create">+ CREATE ROOM<small>PLAY WITH FRIENDS</small></button>
+        <button id="lb-join" class="lb-btn join">👥 JOIN ROOM<small>ENTER ROOM CODE</small></button>
+      </div>
+      <div class="lb-season">
+        <span class="lb-season-snake">🐍</span>
+        <div><b>SEASON 1</b><small>GO HIGHER</small></div>
+        <span class="lb-arrow">›</span>
+      </div>
+    </div>
+
+    <div class="lb-joinform hidden" id="lb-joinform">
+      <input id="join-name" maxlength="16" placeholder="Your name">
+      <input id="join-code" maxlength="6" inputmode="numeric" placeholder="000000" autocomplete="off">
+      <button id="btn-join" class="lb-btn go">JOIN</button>
+    </div>
+    <div class="lb-joinform hidden" id="lb-hostform">
+      <input id="host-name" maxlength="16" placeholder="Your name">
+      <input id="host-max" type="number" min="2" max="50" value="10">
+      <button id="btn-host" class="lb-btn go">CREATE</button>
+    </div>
+    <p id="lobby-status" class="status"></p>
   </div>
 
-  <div id="pane-host">
-    <label>Name <input id="host-name" maxlength="16" placeholder="Your name"></label>
-    <label>Players <input id="host-max" type="number" min="2" max="50" value="10"></label>
-    <button id="btn-host" class="primary">Create room</button>
+  <div class="lb-nav">
+    <button class="lb-nav-btn active" data-nav="home">🏠 HOME</button>
+    <button class="lb-nav-btn" id="nav-inventory">🎒 INVENTORY</button>
+    <button class="lb-nav-btn soon" data-soon="Missions">📋 MISSIONS</button>
+    <button class="lb-nav-btn soon" data-soon="Leaderboard">🏆 LEADERBOARD</button>
+    <button class="lb-nav-btn soon" data-soon="Shop">🛒 SHOP</button>
   </div>
 
-  <div id="pane-join" class="hidden">
-    <label>Name <input id="join-name" maxlength="16" placeholder="Your name"></label>
-    <label>Room code <input id="join-code" maxlength="6" inputmode="numeric" placeholder="000000" autocomplete="off"></label>
-    <button id="btn-join" class="primary">Join room</button>
+  <div id="inventory" class="lb-inventory hidden">
+    <div class="inv-card">
+      <h2>🎒 INVENTORY</h2>
+      <p class="inv-sub">Snake color select karo — ye lobby preview aur game dono me lagega.</p>
+      <div class="snake-preview-wrap">
+        <canvas id="snake-preview" width="360" height="90"></canvas>
+      </div>
+      <div class="swatches" id="color-swatches"></div>
+      <label class="custom-hue">Custom <input type="range" id="hue-slider" min="0" max="359" value="130">
+        <span id="hue-val">130</span></label>
+      <button id="inv-close" class="lb-btn go">DONE</button>
+    </div>
   </div>
-
-  <p id="lobby-status" class="status"></p>
-  <p class="hint">Boost: click / hold mouse or Space. Steer: mouse.</p>
-  <p class="hint small">Friends join at http://YOUR-IP:3000 — README.md me port-forwarding guide hai.</p>
 </div>
 
 <div id="death" class="panel hidden">

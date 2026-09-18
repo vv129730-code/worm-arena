@@ -61,12 +61,14 @@ class Room {
     return this.clients.size >= this.maxPlayers;
   }
 
-  addClient(ws, name, skin, isBot) {
+  addClient(ws, name, skin, isBot, hue) {
     if (this.isFull()) return null;
     const id = nextWormId++;
     const pos = this.pickSpawn();
-    const hue = Math.floor(Math.random() * 360);
-    const w = newWorm(id, name, hue, skin, pos.x, pos.y);
+    const h = (typeof hue === 'number' && isFinite(hue))
+      ? ((Math.floor(hue) % 360) + 360) % 360
+      : Math.floor(Math.random() * 360);
+    const w = newWorm(id, name, h, skin, pos.x, pos.y);
     const entry = { ws, worm: w, isBot: !!isBot, name };
     this.clients.set(id, entry);
     this.clientSync.set(id, { lastAckTick: 0, foodSeen: new Set(), pelletSeen: new Set(), vr: 1600 });

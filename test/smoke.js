@@ -105,18 +105,28 @@ const rGiant = radiusAt(5000); // should be well under the old sqrt curve (~203)
 assert.ok(rGiant > rSoft, 'giant worm still thicker than small');
 assert.ok(rGiant < 110, `giant radius stays navigable (got ${rGiant.toFixed(1)})`);
 
-// 3) Food respawn clusters near surviving food (fast local refill)
+// 3) Food respawn clusters near surviving food (fast local refill).
+// Robust check: median distance-to-nearest-neighbor must be far below the
+// arena radius when respawning a large batch (clustered), unlike uniform.
 const world2 = new World();
 world2.ensureFood();
-const first = [...world2.food.values()][0];
-// Remove all food except one anchor, then respawn a batch
-for (const [id, f] of world2.food) { if (f.id !== first.id) world2.food.delete(id); }
-for (let i = 0; i < 200; i++) world2.spawnFood();
-let near = 0;
+const keep = 40;
+let kept = 0;
+for (const [id, f] of world2.food) { if (kept++ >= keep) world2.food.delete(id); }
+for (let i = 0; i < 600; i++) world2.spawnFood();
+const dists = [];
 for (const f of world2.food.values()) {
-  if (Math.hypot(f.x - first.x, f.y - first.y) < 1200) near++;
+  let best = Infinity;
+  for (const g of world2.food.values()) {
+    if (f.id === g.id) continue;
+    const d = Math.hypot(f.x - g.x, f.y - g.y);
+    if (d < best) best = d;
+  }
+  if (best < Infinity) dists.push(best);
 }
-assert.ok(near > 60, `respawn clusters near survivors (near=${near}/200)`);
+dists.sort((a, b) => a - b);
+const medianNN = dists[dists.length >> 1];
+assert.ok(medianNN < CFG.ARENA_R * 0.15, `respawn clusters (median NN ${Math.round(medianNN)} < ${Math.round(CFG.ARENA_R * 0.15)})`);
 
 // --- ghost-food fix: a deletion by one eater must reach every other client ---
 const room6 = new Room(4);

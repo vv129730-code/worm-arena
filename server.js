@@ -73,6 +73,11 @@ function safeName(raw) {
   return name;
 }
 
+function safeHue(raw) {
+  const n = Number(raw);
+  return (Number.isFinite(n)) ? n : undefined;
+}
+
 wss.on('connection', (ws) => {
   ws.isAlive = true;
   ws.room = null;      // Room instance once joined
@@ -117,7 +122,7 @@ wss.on('connection', (ws) => {
         return;
       }
       ws.wormId = null;
-      const entry = room.addClient(ws, safeName(msg.name || ws.lastName), msg.skin | 0, false);
+      const entry = room.addClient(ws, safeName(msg.name || ws.lastName), msg.skin | 0, false, safeHue(msg.hue));
       if (entry) ws.wormId = entry.worm.id;
       return;
     }
@@ -139,7 +144,7 @@ wss.on('connection', (ws) => {
   function attach(socket, roomObj, msg) {
     socket.room = roomObj;
     socket.lastName = safeName(msg.name);
-    const entry = roomObj.addClient(socket, socket.lastName, (msg.skin | 0) || 0, false);
+    const entry = roomObj.addClient(socket, socket.lastName, (msg.skin | 0) || 0, false, safeHue(msg.hue));
     if (!entry) {
       socket.send(JSON.stringify({ t: 'error', msg: 'Room is full.' }));
       socket.room = null;
