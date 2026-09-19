@@ -41,6 +41,7 @@ let dead = false;
 const INTERP_MS = 55;             // half the snapshot period — smooth, still responsive
 let snapPeriodMs = 50;            // EMA of measured inter-snapshot gap
 let lastSnapPerfAt = 0;
+let selfMissingSince = 0; // death-watchdog: when my worm first vanished from snapshots
 
 // Preallocated polyline buffer for worm bodies — zero per-frame allocation,
 // no GC pauses mid-game.
@@ -353,6 +354,23 @@ function applySnapshot(s) {
   lastSnapTick = s.tick;
   serverTimeOffset = s.time - performance.now();
 
+  // CLIENT-SIDE DEATH WATCHDOG: the server deletes dead worms from the room.
+  // If MY worm vanishes from snapshots while I still think I'm alive (the
+  // single 'died' message was lost/throttled), mark myself dead after 1.5s
+  // instead of freezing on a zombie screen forever.
+  if (!dead && myId !== null) {
+    const present = s.worms.some((row) => row[0] === myId);
+    if (!present) {
+      if (!selfMissingSince) selfMissingSince = performance.now();
+      else if (performance.now() - selfMissingSince > 1500) {
+        selfMissingSince = 0;
+        onDied('the arena');
+      }
+    } else {
+      selfMissingSince = 0;
+    }
+  }
+
   // Measure the real snapshot cadence (EMA) — drives the interpolator.
   const nowP = performance.now();
   if (lastSnapPerfAt) {
@@ -510,8 +528,44 @@ function aimDir() {
   return Math.atan2(dy, dx);
 }
 
+// Where the player is POINTING (mouse on desktop, joystick on touch) — eyes
+// track this. Falls back to movement dir when no input yet this session.
+function eyeDir() {
+  if (isTouch && joyDir !== null) return joyDir;
+  if (mouse.x || mouse.y) return aimDir();
+  return null;
+}
+
 // ack for delta tracking
 setInterval(() => { if (ws && ws.readyState === 1) send({ t: 'ack', tick: lastSnapTick }); }, 500);
+
+// STALE-CONNECTION WATCHDOG: preview webviews/background tabs can freeze a
+// WebSocket's RECEIVE path while readyState still says OPEN (send works,
+// nothing comes back). If we're playing and no snapshot arrives for 4s,
+// hard-reconnect — a healthy server sends 20 snaps/sec, so 4s = dead line.
+setInterval(() => {
+  if (dead || myId === null || !ws || ws.readyState !== 1) return;
+  if (performance.now() - lastSnapPerfAt > 4000 && lastSnapPerfAt > 0) {
+    try { ws.onclose = null; ws.close(); } catch (e) {}
+    ws = null;
+    reconnectAndResume();
+  }
+}, 1500);
+
+// Reconnect into the SAME room and auto-respawn (keeps room code, name, hue)
+async function reconnectAndResume() {
+  try {
+    await connect();
+    ws.onmessage = onMessage;
+    send({ t: 'join', name: playerName(), code: roomCode, skin: 0, hue: myHue });
+    // server may GC the room while we were disconnected — welcome/error will tell
+  } catch (e) {
+    $('lobby-status').textContent = 'Reconnecting failed — lobby khol rahe hain.';
+    document.body.classList.remove('playing');
+    show($('lobby'), true);
+    show($('hud'), false);
+  }
+}
 
 // ---------- game loop ----------
 let lastFrame = performance.now();
@@ -890,9 +944,14 @@ function drawWorm(w, now) {
     }
   }
 
-  // Eyes: two symmetric eyes straddling the movement axis (±~55°), looking
-  // FORWARD — classic slither.io frog-eyes. Previously they bunched to one
-  // side because the perpendicular spread was tiny vs the head radius.
+  // Eyes: two symmetric eyes straddling the movement axis (±~55°). The pupils
+  // LOOK where the player is pointing (mouse/joystick), smoothly interpolated —
+  // other snakes just look where they're heading.
+  if (w.gazeDir === undefined) w.gazeDir = w.dir;
+  const gazeTarget = (w.id === myId ? eyeDir() : null) ?? w.dir;
+  let gd = gazeTarget - w.gazeDir;
+  gd = ((gd + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+  w.gazeDir += gd * 0.2; // smooth gaze swing, no snapping
   for (const s of [-1, 1]) {
     const ea = w.dir + s * 0.95;
     const ex = hx + Math.cos(ea) * r * 0.62;
@@ -905,16 +964,16 @@ function drawWorm(w, now) {
     ctx.lineWidth = Math.max(1, r * 0.06);
     ctx.strokeStyle = 'rgba(0,0,0,0.28)';
     ctx.stroke();
-    // iris + pupil look toward where the worm is heading
-    const px = ex + Math.cos(w.dir) * er * 0.36;
-    const py = ey + Math.sin(w.dir) * er * 0.36;
+    // iris + pupil track the gaze direction
+    const px = ex + Math.cos(w.gazeDir) * er * 0.36;
+    const py = ey + Math.sin(w.gazeDir) * er * 0.36;
     ctx.fillStyle = `hsl(${(w.hue + 40) % 360},90%,42%)`;
     ctx.beginPath();
     ctx.arc(px, py, er * 0.55, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = '#101018';
     ctx.beginPath();
-    ctx.arc(px + Math.cos(w.dir) * er * 0.14, py + Math.sin(w.dir) * er * 0.14, er * 0.28, 0, Math.PI * 2);
+    ctx.arc(px + Math.cos(w.gazeDir) * er * 0.14, py + Math.sin(w.gazeDir) * er * 0.14, er * 0.28, 0, Math.PI * 2);
     ctx.fill();
   }
 
@@ -996,6 +1055,7 @@ $('room-pill').addEventListener('click', () => {
 $('btn-respawn').addEventListener('click', () => {
   show($('death'), false);
   dead = false;
+  selfMissingSince = 0;
   document.body.classList.add('playing');
   show($('room-pill'), true);
   send({ t: 'respawn', name: playerName(), skin: 0, hue: myHue });
