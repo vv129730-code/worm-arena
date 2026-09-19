@@ -26,7 +26,8 @@ html, body {
   box-shadow: 0 0 0 2px rgba(120,140,200,0.25);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.3s;
+  /* NOTE: no CSS transition here — a stuck CSSTransition can freeze opacity
+     at 0 forever (headless/background-tab quirk). Visibility is JS-driven. */
   z-index: 5;
 }
 body.playing #minimap { opacity: 1; }
