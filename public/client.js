@@ -34,7 +34,25 @@ let spaceDown = false;
 let serverTimeOffset = 0;
 let lastSnapTick = 0;
 let dead = false;
-let fps = 60;
+
+// Interpolation: server sends ~20 snapshots/sec, we render at 60fps. Each worm
+// keeps a from->to segment (in local perf time) that we smoothly traverse —
+// removes the every-3rd-frame "teleport" stutter completely.
+const INTERP_MS = 55;             // half the snapshot period — smooth, still responsive
+let snapPeriodMs = 50;            // EMA of measured inter-snapshot gap
+let lastSnapPerfAt = 0;
+
+// Preallocated polyline buffer for worm bodies — zero per-frame allocation,
+// no GC pauses mid-game.
+const PTS_MAX = 2048;
+const ptsX = new Float64Array(PTS_MAX);
+const ptsY = new Float64Array(PTS_MAX);
+let ptsN = 0;
+
+// Cached DOM handles — per-frame getElementById calls are wasteful
+const elHudKills = $('hud-kills');
+const elLbList = $('lb-list');
+const elKillFeed = $('kill-feed');
 
 // Capped DPR: full devicePixelRatio on hi-dpi screens = 4x pixel fill = lag.
 let DPR = Math.min(window.devicePixelRatio || 1, 1.5);
@@ -172,19 +190,18 @@ document.addEventListener('click', (e) => {
       document.querySelector('.lb-nav-btn[data-nav=home]').classList.add('active');
       break;
     case 'lb-play':
-      $('host-name').value = localStorage.getItem('wa_name') || 'Player';
-      $('host-max').value = '10';
-      hostGame();
+      // QUICK MATCH: server public room me match karega (jo bhi us waqt play
+      // kar rahe hain unke saath) — private rooms kabhi nahi.
+      quickMatch();
       break;
     case 'lb-create':
       show($('lb-hostform'), true);
       show($('lb-joinform'), false);
-      $('host-name').focus();
       break;
     case 'lb-join':
       show($('lb-joinform'), true);
       show($('lb-hostform'), false);
-      $('join-name').focus();
+      $('join-code').focus();
       break;
     default:
       if (t.dataset && t.dataset.soon) soonToast(t.dataset.soon);
@@ -206,10 +223,18 @@ document.addEventListener('input', (e) => {
 function connect() {
   return new Promise((resolve, reject) => {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${proto}//${location.host}`);
-    ws.onopen = () => resolve();
-    ws.onerror = () => reject(new Error('Connection failed'));
-    ws.onclose = () => {
+    // Stale-socket guard: agar purana connection abhi khula hai, use close
+    // karke uska onclose fire hone do — warna dobara PLAY karne par purana
+    // close handler naye session ka 'playing' class ura deta hai.
+    if (ws) { try { ws.onclose = null; ws.close(); } catch (e) {} ws = null; }
+    const sock = new WebSocket(`${proto}//${location.host}`);
+    ws = sock;
+    sock.onopen = () => resolve();
+    sock.onerror = () => reject(new Error('Connection failed'));
+    sock.onclose = () => {
+      // Stale socket ka close ignore karo (current ws ab sock nahi hai)
+      if (ws !== sock) return;
+      ws = null;
       // Only treat as a disconnect if we're not already on the death/lobby screen
       if (!dead && myId !== null) {
         $('lobby-status').textContent = 'Disconnected from server.';
@@ -218,7 +243,6 @@ function connect() {
         show($('hud'), false);
         show($('death'), false);
       }
-      ws = null;
     };
   });
 }
@@ -227,9 +251,26 @@ function send(obj) {
   if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
 }
 
+// Shared player name (single field drives quick play / create / join / respawn)
+function playerName() {
+  const n = $('player-name').value.trim() || localStorage.getItem('wa_name') || 'Player';
+  localStorage.setItem('wa_name', n);
+  return n;
+}
+
+async function quickMatch() {
+  $('lobby-status').textContent = 'Finding players…';
+  try {
+    await connect();
+    ws.onmessage = onMessage;
+    send({ t: 'quick', name: playerName(), skin: 0, hue: myHue, maxPlayers: 10 });
+  } catch (e) {
+    $('lobby-status').textContent = e.message;
+  }
+}
+
 async function hostGame() {
-  const name = $('host-name').value.trim() || 'Host';
-  localStorage.setItem('wa_name', name);
+  const name = playerName();
   const max = Math.max(2, Math.min(50, parseInt($('host-max').value, 10) || 10));
   $('lobby-status').textContent = 'Connecting…';
   try {
@@ -242,8 +283,7 @@ async function hostGame() {
 }
 
 async function joinGame() {
-  const name = $('join-name').value.trim() || 'Player';
-  localStorage.setItem('wa_name', name);
+  const name = playerName();
   const code = $('join-code').value.trim();
   if (!/^\d{6}$/.test(code)) {
     $('lobby-status').textContent = 'Room code 6 digits ka hona chahiye.';
@@ -280,11 +320,18 @@ function onMessage(ev) {
       show($('death'), false);
       show($('room-pill'), true);
       $('room-code').textContent = roomCode;
+      $('room-kind').textContent = msg.isPrivate ? 'PRIVATE' : 'QUICK';
       $('lobby-status').textContent = '';
       break;
     case 'error':
       $('lobby-status').textContent = msg.msg;
       $('death-stats').textContent = msg.msg;
+      try { ws.close(); } catch (e) {}
+      break;
+    case 'closed':
+      // Room was GC'd server-side (everyone dead/idle too long). Drop the
+      // player back to the lobby instead of leaving them on a frozen screen.
+      $('lobby-status').textContent = 'Room closed — sab khel se bahar ho gaye the.';
       try { ws.close(); } catch (e) {}
       break;
     case 'snap':
@@ -294,7 +341,8 @@ function onMessage(ev) {
       onDied(msg.by);
       break;
     case 'chat':
-      addKillFeed(`${msg.name}: ${msg.text}`);
+      // SYSTEM join/leave lines go to the kill-feed area (same slot, fades via key-change)
+      addKillFeed(msg.name === 'SYSTEM' ? `⚡ ${msg.text}` : `${msg.name}: ${msg.text}`);
       break;
     case 'pong':
       break;
@@ -305,6 +353,14 @@ function applySnapshot(s) {
   lastSnapTick = s.tick;
   serverTimeOffset = s.time - performance.now();
 
+  // Measure the real snapshot cadence (EMA) — drives the interpolator.
+  const nowP = performance.now();
+  if (lastSnapPerfAt) {
+    const gap = Math.min(400, Math.max(10, nowP - lastSnapPerfAt));
+    snapPeriodMs = snapPeriodMs * 0.8 + gap * 0.2;
+  }
+  lastSnapPerfAt = nowP;
+
   // worms — head updates arrive at NET_HZ; we record a position history so the
   // client can rebuild each worm's body path (server only sends the head).
   const seen = new Set();
@@ -313,10 +369,21 @@ function applySnapshot(s) {
     seen.add(id);
     let w = worms.get(id);
     if (!w) {
-      w = { id, hue, skin, x, y, dir, len, boost, protect, history: [] };
+      w = {
+        id, hue, skin, x, y, dir, len, boost, protect, history: [],
+        // interpolation segment (new worms start parked on their spawn point)
+        fx: x, fy: y, tx: x, ty: y, fd: dir, td: dir, segAt: nowP, segAlpha: 1,
+      };
       worms.set(id, w);
     } else {
-      w.x = x; w.y = y; w.dir = dir; w.len = len; w.boost = boost; w.protect = protect;
+      // Slide the segment: the position we're currently displaying becomes the
+      // new origin, so motion stays continuous even with jitter/missed packets.
+      const [ix, iy] = wormInterp(w, nowP);
+      w.fx = ix; w.fy = iy;
+      w.fd = angleLerp(w.fd, w.td, w.segAlpha);
+      w.tx = x; w.ty = y; w.td = dir;
+      w.segAt = nowP; w.segAlpha = 0;
+      w.len = len; w.boost = boost; w.protect = protect;
     }
     const h = w.history;
     const last = h[h.length - 1];
@@ -336,6 +403,7 @@ function applySnapshot(s) {
   for (const p of (s.pellets || [])) { p.born = performance.now(); pellets.set(p.i, p); }
 
   leaderboard = s.lb || [];
+  youKills = s.youKills | 0;
   kills = s.kills || [];
   for (const e of leaderboard) {
     const w = worms.get(e.id);
@@ -448,18 +516,18 @@ setInterval(() => { if (ws && ws.readyState === 1) send({ t: 'ack', tick: lastSn
 // ---------- game loop ----------
 let lastFrame = performance.now();
 let hudLen = 10;
+let frameCount = 0;
 
 function frame(now) {
   requestAnimationFrame(frame);
-  const dt = Math.min(50, now - lastFrame) / 1000;
   lastFrame = now;
-  fps = fps * 0.95 + (1 / Math.max(dt, 0.001)) * 0.05;
+  frameCount++;
 
   updateCamera();
   pruneFarFood();
   updateHud();
   render(now);
-  renderMinimap();
+  if (frameCount % 4 === 0) renderMinimap(); // ~15Hz is plenty for a minimap
 }
 
 // Per-frame safety prune: drop food that provably can't be on screen (cam is
@@ -488,11 +556,31 @@ function radiusAt(len) {
   return base + K2 * Math.log1p((over - SOFT) / 40);
 }
 
+// Smoothly traverse a worm's current from->to segment (60fps motion from
+// 20Hz snapshots). Slight overshoot (1.25x) keeps giants gliding if a
+// snapshot arrives late. Stores segAlpha for angle blending.
+function wormInterp(w, now) {
+  const t = (now - w.segAt) / Math.max(snapPeriodMs, 20);
+  const a = t < 0 ? 0 : t > 1.25 ? 1.25 : t;
+  w.segAlpha = a;
+  return [w.fx + (w.tx - w.fx) * a, w.fy + (w.ty - w.fy) * a];
+}
+
+// Shortest-arc angle interpolation (no 350°->0° spins)
+function angleLerp(a, b, t) {
+  let d = (b - a) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return a + d * (t > 1 ? 1 : t);
+}
+
 function updateCamera() {
   const target = worms.get(myId);
   if (target && !dead) {
-    cam.x = target.x;
-    cam.y = target.y;
+    // Camera rides the INTERPOLATED head — buttery pan, no 20Hz snapping.
+    const [ix, iy] = wormInterp(target, performance.now());
+    cam.x = ix;
+    cam.y = iy;
   }
   const len = target ? target.len : hudLen;
   const r = radiusAt(len);
@@ -500,33 +588,47 @@ function updateCamera() {
   cam.zoom += (targetZoom - cam.zoom) * 0.05;
 }
 
+// Chat / SYSTEM lines share the kill-feed slot (top-center pills)
+let chatLines = [];
+function addKillFeed(text) {
+  chatLines.push({ text, at: Date.now() });
+  if (chatLines.length > 4) chatLines.shift();
+  elKillFeed.innerHTML = chatLines.map((c) =>
+    `<div class="feed-line">${escapeHtml(c.text)}</div>`
+  ).join('');
+  clearTimeout(addKillFeed._t);
+  addKillFeed._t = setTimeout(() => {
+    chatLines = [];
+    elKillFeed.innerHTML = '';
+  }, 4000);
+}
+
 function updateHud() {
   const me = worms.get(myId);
   if (me) hudLen = Math.floor(me.len);
-  const meEntry = leaderboard.find((e) => e.id === myId);
-  $('hud-kills').textContent = meEntry ? meEntry.kills : 0;
+  // youKills comes straight from the server each snapshot (top-10 leaderboard
+  // drop hone par bhi kill count sahi rehta hai).
+  elHudKills.textContent = (typeof youKills === 'number') ? youKills : 0;
 
   // PERF: rebuild DOM only when content actually changed — per-frame innerHTML
   // writes were the #1 stutter source (layout thrash at 60fps).
-  const ol = $('lb-list');
   const lbKey = leaderboard.slice(0, 10).map((e) => `${e.id},${e.score}`).join('|');
   if (lbKey !== lastLbKey) {
     lastLbKey = lbKey;
-    ol.innerHTML = leaderboard.slice(0, 10).map((e, i) =>
+    elLbList.innerHTML = leaderboard.slice(0, 10).map((e, i) =>
       `<li${e.id === myId ? ' class="me"' : ''}><span>${i + 1}. ${escapeHtml(e.name)}</span><b>${e.score}</b></li>`
     ).join('');
   }
 
-  const feed = $('kill-feed');
   const feedKey = kills.map((k) => `${k.killerName}>${k.victimName}`).join('|');
   if (feedKey !== lastFeedKey) {
     lastFeedKey = feedKey;
-    feed.innerHTML = kills.slice(-4).map((k) =>
+    elKillFeed.innerHTML = kills.slice(-4).map((k) =>
       `<div class="feed-line">☠ ${escapeHtml(k.killerName)} ➜ ${escapeHtml(k.victimName)}</div>`
     ).join('');
   }
 }
-let lastLbKey = '', lastFeedKey = '';
+let lastLbKey = '', lastFeedKey = '', youKills = 0;
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -534,6 +636,36 @@ function escapeHtml(s) {
 
 // ---------- rendering ----------
 const ARENA_R = 3800;
+
+// Camera pan smoothing (world units): the view chases the head so boost
+// surges and speed changes glide instead of jolting. Zoom stays in updateCamera.
+let camPanX = 0, camPanY = 0, camPanInit = false;
+// Visible half-extents (world units) — set each frame in render(), used by
+// drawWorm to stop building body polylines that are far off-screen.
+let viewHalfW = 800, viewHalfH = 600;
+
+// Pre-rendered static backdrop (radial depth + vignette) — rebuilt only when
+// the canvas size changes. One drawImage per frame instead of per-pixel work.
+let bgCanvas = null;
+function makeBackdrop() {
+  const w = cv.width, h = cv.height;
+  if (!w || !h) return;
+  if (!bgCanvas) bgCanvas = document.createElement('canvas');
+  if (bgCanvas.width !== w || bgCanvas.height !== h) { bgCanvas.width = w; bgCanvas.height = h; }
+  const g = bgCanvas.getContext('2d');
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  const grad = g.createRadialGradient(w / 2, h * 0.46, 40, w / 2, h / 2, Math.max(w, h) * 0.75);
+  grad.addColorStop(0, '#161c32');
+  grad.addColorStop(0.55, '#0e1223');
+  grad.addColorStop(1, '#070910');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, w, h);
+  const vg = g.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.42, w / 2, h / 2, Math.max(w, h) * 0.78);
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.5)');
+  g.fillStyle = vg;
+  g.fillRect(0, 0, w, h);
+}
 
 function worldToScreen(x, y) {
   return [
@@ -544,34 +676,45 @@ function worldToScreen(x, y) {
 
 function render(now) {
   const w = cv.width, h = cv.height;
+  makeBackdrop();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = '#0b0e1a';
-  ctx.fillRect(0, 0, w, h);
+  if (bgCanvas && bgCanvas.width) ctx.drawImage(bgCanvas, 0, 0);
+  else { ctx.fillStyle = '#0b0e1a'; ctx.fillRect(0, 0, w, h); }
+
+  if (!camPanInit) { camPanX = cam.x; camPanY = cam.y; camPanInit = true; }
+  camPanX += (cam.x - camPanX) * 0.22;
+  camPanY += (cam.y - camPanY) * 0.22;
+  const vx = camPanX, vy = camPanY;
 
   ctx.save();
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   const cw = w / DPR, ch = h / DPR;
   ctx.translate(cw / 2, ch / 2);
   ctx.scale(cam.zoom, cam.zoom);
-  ctx.translate(-cam.x, -cam.y);
+  ctx.translate(-vx, -vy);
 
   // grid
   const gridStep = 120;
-  const gx0 = Math.floor((cam.x - cw / 2 / cam.zoom) / gridStep) * gridStep;
-  const gy0 = Math.floor((cam.y - ch / 2 / cam.zoom) / gridStep) * gridStep;
-  const gx1 = cam.x + cw / 2 / cam.zoom, gy1 = cam.y + ch / 2 / cam.zoom;
-  ctx.strokeStyle = 'rgba(80,100,160,0.12)';
+  const gx0 = Math.floor((vx - cw / 2 / cam.zoom) / gridStep) * gridStep;
+  const gy0 = Math.floor((vy - ch / 2 / cam.zoom) / gridStep) * gridStep;
+  const gx1 = vx + cw / 2 / cam.zoom, gy1 = vy + ch / 2 / cam.zoom;
+  ctx.strokeStyle = 'rgba(90,110,180,0.10)';
   ctx.lineWidth = 1 / cam.zoom;
   ctx.beginPath();
   for (let gx = gx0; gx <= gx1; gx += gridStep) { ctx.moveTo(gx, gy0); ctx.lineTo(gx, gy1); }
   for (let gy = gy0; gy <= gy1; gy += gridStep) { ctx.moveTo(gx0, gy); ctx.lineTo(gx1, gy); }
   ctx.stroke();
 
-  // arena border
+  // arena border: neon double ring (2 strokes — outer haze + bright core)
+  ctx.beginPath();
+  ctx.arc(0, 0, ARENA_R + 8, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(255,70,90,0.14)';
+  ctx.lineWidth = 40 / cam.zoom;
+  ctx.stroke();
   ctx.beginPath();
   ctx.arc(0, 0, ARENA_R, 0, Math.PI * 2);
-  ctx.strokeStyle = 'rgba(255,80,80,0.5)';
-  ctx.lineWidth = 10 / cam.zoom;
+  ctx.strokeStyle = 'rgba(255,85,105,0.8)';
+  ctx.lineWidth = 5 / cam.zoom;
   ctx.stroke();
 
   // food — EMOJI fruits from a SPRITE CACHE: each emoji is rendered to an
@@ -579,7 +722,8 @@ function render(now) {
   // food every frame was the #2 lag source (font parse ~hundreds/frame).
   // Off-screen items are culled cheaply.
   const halfW = cw / 2 / cam.zoom + 60, halfH = ch / 2 / cam.zoom + 60;
-  const camL = cam.x - halfW, camR = cam.x + halfW, camT = cam.y - halfH, camB = cam.y + halfH;
+  viewHalfW = halfW; viewHalfH = halfH;
+  const camL = vx - halfW, camR = vx + halfW, camT = vy - halfH, camB = vy + halfH;
   const tSec = now / 1000;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -589,7 +733,11 @@ function render(now) {
     const r = f.r * pulse;
     const em = (f.v >= 5) ? '\u2B50' : FOOD_EMOJIS[f.i % FOOD_EMOJIS.length];
     const s = r * 2.6;
-    ctx.drawImage(emojiSprite(em), f.x - s / 2, f.y - s / 2, s, s);
+    const g = emojiSprite(em);
+    ctx.globalAlpha = 0.28; // soft ground shadow — depth cue, zero extra gradient cost
+    ctx.drawImage(g, f.x - s / 2, f.y - s / 2 + r * 0.38, s, s);
+    ctx.globalAlpha = 1;
+    ctx.drawImage(g, f.x - s / 2, f.y - s / 2, s, s);
   }
 
   // pellets — death drops: emoji only, no glow
@@ -597,24 +745,42 @@ function render(now) {
     if (p.x < camL || p.x > camR || p.y < camT || p.y > camB) continue;
     const em = PELLET_EMOJI[p.i % PELLET_EMOJI.length];
     const s = p.r * 2.4;
-    ctx.drawImage(emojiSprite(em), p.x - s / 2, p.y - s / 2, s, s);
+    const g = emojiSprite(em);
+    ctx.globalAlpha = 0.25;
+    ctx.drawImage(g, p.x - s / 2, p.y - s / 2 + p.r * 0.4, s, s);
+    ctx.globalAlpha = 1;
+    ctx.drawImage(g, p.x - s / 2, p.y - s / 2, s, s);
   }
 
   // worms — cull off-screen bodies (minimap still shows them)
-  for (const w of worms.values()) {
-    const wr = radiusAt(w.len) + 40;
-    if (w.id !== myId && (w.x < camL - wr || w.x > camR + wr || w.y < camT - wr || w.y > camB + wr)) continue;
-    drawWorm(w, now);
+  // Name font is set ONCE per frame (per-worm ctx.font was another GC/parser hit)
+  ctx.textAlign = 'center';
+  ctx.font = `${13 / cam.zoom}px system-ui, sans-serif`;
+  for (const wm of worms.values()) {
+    const wr = radiusAt(wm.len) + 40;
+    if (wm.id !== myId && (wm.x < camL - wr || wm.x > camR + wr || wm.y < camT - wr || wm.y > camB + wr)) continue;
+    drawWorm(wm, now);
   }
 
   ctx.restore();
 }
 
-// Stroke a polyline through pts ([[x,y],...]) using current stroke settings.
-function strokePath(pts) {
+// Stroke the preallocated ptsX/ptsY buffer using current stroke settings —
+// zero allocation (old version built a fresh array per layer per worm per frame).
+function strokePath() {
   ctx.beginPath();
-  ctx.moveTo(pts[0][0], pts[0][1]);
-  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.moveTo(ptsX[0], ptsY[0]);
+  for (let i = 1; i < ptsN; i++) ctx.lineTo(ptsX[i], ptsY[i]);
+  ctx.stroke();
+}
+
+// Stroke only points [from..to) of the shared buffer — used for the tapering
+// tail (2 extra thin strokes, no allocation).
+function strokePathRange(from, to) {
+  if (to - from < 2) return;
+  ctx.beginPath();
+  ctx.moveTo(ptsX[from], ptsY[from]);
+  for (let i = from + 1; i < to; i++) ctx.lineTo(ptsX[i], ptsY[i]);
   ctx.stroke();
 }
 
@@ -623,52 +789,100 @@ function drawWorm(w, now) {
   const h = w.history;
   if (h.length === 0) return;
 
-  // Build the visible body polyline once (head -> tail)
+  // Interpolated head position — the whole worm is drawn from here so bodies
+  // glide instead of stepping at snapshot rate.
+  const [hx, hy] = wormInterp(w, now);
+
+  // Long worm far off-screen? Skip the whole polyline build (history walk is
+  // the most expensive part of drawing a giant).
+  if (w.id !== myId && (hx < cam.x - viewHalfW - 600 || hx > cam.x + viewHalfW + 600 ||
+      hy < cam.y - viewHalfH - 600 || hy > cam.y + viewHalfH + 600)) return;
+
+  // Build the visible body polyline into the shared buffer (head -> tail).
   const need = w.len * 3;
-  const pts = [[w.x, w.y]];
   let drawn = 0;
-  let px = w.x, py = w.y;
-  for (let i = h.length - 1; i >= 0 && drawn < need; i--) {
+  let px = hx, py = hy;
+  ptsX[0] = hx; ptsY[0] = hy; ptsN = 1;
+  for (let i = h.length - 1; i >= 0 && drawn < need && ptsN < PTS_MAX; i--) {
     const p = h[i];
-    const d = Math.hypot(p.x - px, p.y - py);
-    if (d > 200) break; // history gap (respawn) — stop here
-    pts.push([p.x, p.y]);
-    drawn += d;
+    const dx = p.x - px, dy = p.y - py;
+    const d2 = dx * dx + dy * dy;
+    if (d2 > 40000) break; // history gap (respawn) — stop here (200^2)
+    drawn += Math.sqrt(d2);
+    ptsX[ptsN] = p.x; ptsY[ptsN] = p.y; ptsN++;
     px = p.x; py = p.y;
   }
-  if (pts.length < 2) pts.push([w.x - Math.cos(w.dir) * r, w.y - Math.sin(w.dir) * r]);
+  if (ptsN < 2) {
+    ptsX[1] = hx - Math.cos(w.dir) * r;
+    ptsY[1] = hy - Math.sin(w.dir) * r;
+    ptsN = 2;
+  }
 
   const boostGlow = w.boost ? 1 : 0;
 
-  // Layer 1: dark outline (slightly wider) for separation from background
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
+
+  // Layer 1: dark outline (slightly wider) for separation from background
   ctx.strokeStyle = w.protect ? `hsla(${w.hue},80%,60%,0.45)` : `hsla(${w.hue},70%,18%,0.9)`;
   ctx.lineWidth = r * 2 + 5;
-  strokePath(pts);
+  strokePath();
 
   // Layer 2: main body (bright core color)
   ctx.strokeStyle = w.protect ? `hsla(${w.hue},80%,60%,0.5)` : `hsl(${w.hue},85%,60%)`;
   ctx.lineWidth = r * 2;
-  strokePath(pts);
+  strokePath();
 
-  // Layer 3: highlight stripe along the top edge — gives a round, lit look.
-  // Offset the same path toward the head direction's left by ~35% of radius.
+  // Layer 3: dark scale BANDS every ~5th point — segmented, premium look.
+  // One extra path, no allocations: overlay stroke dashes won't follow the
+  // path curve, so we draw a second thinner darker stroke over the body.
+  if (ptsN > 6 && !w.protect) {
+    ctx.strokeStyle = `hsla(${w.hue},75%,30%,0.35)`;
+    ctx.lineWidth = r * 1.05;
+    ctx.setLineDash([r * 0.9, r * 2.6]);
+    strokePath();
+    ctx.setLineDash([]);
+  }
+
+  // Layer 4: highlight stripe along the top edge — round, lit look.
   if (!w.protect) {
     ctx.strokeStyle = `hsla(${w.hue},95%,78%,0.35)`;
     ctx.lineWidth = r * 0.8;
     const off = r * 0.45;
     ctx.save();
     ctx.translate(Math.cos(w.dir - Math.PI / 2) * off, Math.sin(w.dir - Math.PI / 2) * off);
-    strokePath(pts);
+    strokePath();
     ctx.restore();
   }
 
+  // Tapered tail: two progressively thinner strokes over the last segments.
+  if (ptsN > 12 && !w.protect) {
+    ctx.strokeStyle = `hsl(${w.hue},85%,60%)`;
+    ctx.lineWidth = r * 1.25;
+    strokePathRange(Math.floor(ptsN * 0.78), ptsN);
+    ctx.lineWidth = r * 0.6;
+    strokePathRange(Math.floor(ptsN * 0.9), ptsN);
+  }
+
+  // Head glow — makes YOUR worm (and boosts) pop. One radial gradient per
+  // frame, only when boosting (idle giants skip it).
+  if (w.id === myId || w.boost) {
+    const gr = r * (w.boost ? 3.2 : 2.2);
+    const gg = ctx.createRadialGradient(hx, hy, r * 0.4, hx, hy, gr);
+    gg.addColorStop(0, `hsla(${w.hue},95%,70%,${w.boost ? 0.4 : 0.22})`);
+    gg.addColorStop(1, 'hsla(0,0%,0%,0)');
+    ctx.fillStyle = gg;
+    ctx.beginPath();
+    ctx.arc(hx, hy, gr, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   // Boost trail: fading circles at the tail while boosting
-  if (boostGlow && pts.length > 2) {
+  if (w.boost && ptsN > 2) {
     for (let k = 1; k <= 3; k++) {
-      const idx = Math.max(0, Math.min(pts.length - 1, pts.length - 1 - k * 4));
-      const [tx, ty] = pts[idx];
+      const idx = ptsN - 1 - k * 4;
+      if (idx < 0) break;
+      const tx = ptsX[idx], ty = ptsY[idx];
       ctx.fillStyle = `hsla(${w.hue},95%,70%,${0.22 / k})`;
       ctx.beginPath();
       ctx.arc(tx, ty, r * (1.1 + k * 0.35), 0, Math.PI * 2);
@@ -676,24 +890,39 @@ function drawWorm(w, now) {
     }
   }
 
-  // Eyes: white sclera + colored iris + dark pupil (looks alive)
-  const hx = w.x, hy = w.y;
+  // Eyes: two symmetric eyes straddling the movement axis (±~55°), looking
+  // FORWARD — classic slither.io frog-eyes. Previously they bunched to one
+  // side because the perpendicular spread was tiny vs the head radius.
   for (const s of [-1, 1]) {
-    const ex = hx + Math.cos(w.dir) * r * 0.45 + Math.cos(w.dir + s * Math.PI / 2) * r * 0.5;
-    const ey = hy + Math.sin(w.dir) * r * 0.45 + Math.sin(w.dir + s * Math.PI / 2) * r * 0.5;
+    const ea = w.dir + s * 0.95;
+    const ex = hx + Math.cos(ea) * r * 0.62;
+    const ey = hy + Math.sin(ea) * r * 0.62;
+    const er = r * 0.36;
     ctx.fillStyle = '#fff';
     ctx.beginPath();
-    ctx.arc(ex, ey, r * 0.34, 0, Math.PI * 2);
+    ctx.arc(ex, ey, er, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = `hsl(${(w.hue + 40) % 360},90%,45%)`;
+    ctx.lineWidth = Math.max(1, r * 0.06);
+    ctx.strokeStyle = 'rgba(0,0,0,0.28)';
+    ctx.stroke();
+    // iris + pupil look toward where the worm is heading
+    const px = ex + Math.cos(w.dir) * er * 0.36;
+    const py = ey + Math.sin(w.dir) * er * 0.36;
+    ctx.fillStyle = `hsl(${(w.hue + 40) % 360},90%,42%)`;
     ctx.beginPath();
-    ctx.arc(ex + Math.cos(w.dir) * r * 0.1, ey + Math.sin(w.dir) * r * 0.1, r * 0.2, 0, Math.PI * 2);
+    ctx.arc(px, py, er * 0.55, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = '#101018';
     ctx.beginPath();
-    ctx.arc(ex + Math.cos(w.dir) * r * 0.14, ey + Math.sin(w.dir) * r * 0.14, r * 0.1, 0, Math.PI * 2);
+    ctx.arc(px + Math.cos(w.dir) * er * 0.14, py + Math.sin(w.dir) * er * 0.14, er * 0.28, 0, Math.PI * 2);
     ctx.fill();
   }
+
+  // Nose dot — face depth cue
+  ctx.fillStyle = `hsla(${w.hue},85%,35%,0.8)`;
+  ctx.beginPath();
+  ctx.arc(hx + Math.cos(w.dir) * r * 0.72, hy + Math.sin(w.dir) * r * 0.72, r * 0.16, 0, Math.PI * 2);
+  ctx.fill();
 
   // Spawn protection shimmer ring
   if (w.protect) {
@@ -704,10 +933,8 @@ function drawWorm(w, now) {
     ctx.stroke();
   }
 
-  // name
+  // name (font already set once per frame in render())
   ctx.fillStyle = 'rgba(255,255,255,0.85)';
-  ctx.font = `${13 / cam.zoom}px system-ui, sans-serif`;
-  ctx.textAlign = 'center';
   ctx.fillText(w.id === myId ? 'You' : w.name || `W${w.id}`, hx, hy - r - 8 / cam.zoom);
 }
 
@@ -771,7 +998,7 @@ $('btn-respawn').addEventListener('click', () => {
   dead = false;
   document.body.classList.add('playing');
   show($('room-pill'), true);
-  send({ t: 'respawn', name: $('join-name').value.trim() || $('host-name').value.trim() || 'Player', skin: 0, hue: myHue });
+  send({ t: 'respawn', name: playerName(), skin: 0, hue: myHue });
 });
 $('btn-lobby').addEventListener('click', () => {
   show($('death'), false);
@@ -783,3 +1010,17 @@ $('btn-lobby').addEventListener('click', () => {
   worms.clear(); foods.clear(); pellets.clear();
   try { if (ws) ws.close(); } catch (e) {}
 });
+
+// ---------- lobby init: name pre-fill + online counter ----------
+(function initLobbyExtras() {
+  $('player-name').value = localStorage.getItem('wa_name') || '';
+  const refresh = async () => {
+    try {
+      const r = await fetch('/api/stats');
+      const j = await r.json();
+      $('online-count').textContent = j.players;
+    } catch (e) { /* ignore */ }
+  };
+  refresh();
+  setInterval(refresh, 5000);
+})();

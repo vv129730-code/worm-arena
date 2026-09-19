@@ -387,7 +387,66 @@ body.touch .touch-only { display: block; }
   gap: 20px;
   flex-wrap: wrap;
 }
-.lb-menu { display: flex; flex-direction: column; gap: 12px; width: min(360px, 88vw); }
+.lb-menu { display: flex; flex-direction: column; gap: 12px; width: min(380px, 88vw); }
+
+/* name + online counter row */
+.lb-name-row { display: flex; gap: 8px; align-items: center; }
+.lb-name-row input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(8,10,18,0.85);
+  border: 2px solid rgba(255,255,255,0.18);
+  border-radius: 10px;
+  color: #fff;
+  padding: 11px 14px;
+  font-size: 15px;
+  font-weight: 700;
+}
+.lb-name-row input:focus { outline: none; border-color: #f5c518; }
+.lb-online {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(8,10,18,0.85);
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: #9aa3b8;
+  white-space: nowrap;
+}
+.lb-online b { color: #4ade80; font-size: 15px; }
+.lb-online .dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 8px #22c55e;
+  animation: onlinePulse 2s ease-in-out infinite;
+}
+@keyframes onlinePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* create + join side-by-side */
+.lb-row2 { display: flex; gap: 10px; }
+.lb-row2 .lb-btn { flex: 1; font-size: 15px; padding: 11px 12px; }
+.lb-row2 .lb-btn small { font-size: 9px; letter-spacing: 2px; }
+.lb-hint {
+  color: rgba(220,228,245,0.55);
+  font-size: 11px;
+  letter-spacing: 1px;
+  margin-top: 14px;
+  text-shadow: 0 1px 3px #000;
+}
+#room-kind {
+  background: rgba(245,197,24,0.15);
+  border: 1px solid rgba(245,197,24,0.5);
+  color: #ffd23f;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  border-radius: 6px;
+  padding: 2px 6px;
+  margin-right: 4px;
+}
 .lb-season { position: static; flex: 0 0 auto; }
 .lb-btn {
   position: relative;
@@ -599,4 +658,8 @@ body.touch .touch-only { display: block; }
   .lb-currency span { padding: 4px 10px; font-size: 12px; }
   .lb-joinform { margin-top: 10px; }
   .lb-joinform input { padding: 9px 12px; font-size: 14px; }
+  .lb-name-row input { padding: 9px 12px; font-size: 14px; }
+  .lb-online { padding: 8px 9px; font-size: 10px; }
+  .lb-row2 .lb-btn { font-size: 13px; padding: 9px 10px; }
+  .lb-hint { display: none; }
 }

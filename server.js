@@ -96,9 +96,15 @@ wss.on('connection', (ws) => {
 
     const room = ws.room;
     if (!room) {
-      if (msg.t === 'create') {
+      if (msg.t === 'quick') {
+        // Quick play: match into any open public room (never private ones).
+        let target = manager.findPublic();
+        if (!target) target = manager.create(clampPlayerLimit(msg.maxPlayers) || 10, false);
+        attach(ws, target, msg);
+      } else if (msg.t === 'create') {
+        // Player-created rooms are always PRIVATE (code-only entry).
         const maxPlayers = clampPlayerLimit(msg.maxPlayers);
-        const newRoom = manager.create(maxPlayers);
+        const newRoom = manager.create(maxPlayers, true);
         attach(ws, newRoom, msg);
       } else if (msg.t === 'join') {
         const existing = manager.get(String(msg.code || ''));
@@ -116,6 +122,11 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.t === 'respawn') {
+      if (!manager.get(room.code)) { // room was GC'd while player sat on death screen
+        ws.send(JSON.stringify({ t: 'closed' }));
+        ws.room = null;
+        return;
+      }
       if (ws.wormId && room.clients.has(ws.wormId)) return; // still alive
       if (room.isFull()) {
         ws.send(JSON.stringify({ t: 'error', msg: 'Room is full.' }));
@@ -134,6 +145,7 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
+    if (ws.room) manager.untrackSocket(ws.room, ws);
     if (ws.room && ws.wormId) ws.room.removeClient(ws.wormId);
     ws.room = null;
     ws.wormId = null;
@@ -143,6 +155,7 @@ wss.on('connection', (ws) => {
 
   function attach(socket, roomObj, msg) {
     socket.room = roomObj;
+    manager.trackSocket(roomObj, socket);
     socket.lastName = safeName(msg.name);
     const entry = roomObj.addClient(socket, socket.lastName, (msg.skin | 0) || 0, false, safeHue(msg.hue));
     if (!entry) {

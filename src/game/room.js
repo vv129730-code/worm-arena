@@ -23,9 +23,10 @@ function randomCode() {
 let nextWormId = 1;
 
 class Room {
-  constructor(maxPlayers) {
+  constructor(maxPlayers, isPrivate = true) {
     this.code = randomCode();
     this.maxPlayers = clampPlayerLimit(maxPlayers);
+    this.isPrivate = !!isPrivate; // private = code-only entry; public = quick-play pool
     this.createdAt = Date.now();
     this.clients = new Map();      // wormId -> client entry {ws, worm, isBot, name}
     this.world = new World();
@@ -73,7 +74,7 @@ class Room {
     this.clients.set(id, entry);
     this.clientSync.set(id, { lastAckTick: 0, foodSeen: new Set(), pelletSeen: new Set(), vr: 1600 });
     if (!isBot && ws) {
-      ws.send(JSON.stringify({ t: 'welcome', id, roomCode: this.code, maxPlayers: this.maxPlayers, tickHz: CFG.TICK_HZ }));
+      ws.send(JSON.stringify({ t: 'welcome', id, roomCode: this.code, maxPlayers: this.maxPlayers, isPrivate: this.isPrivate, tickHz: CFG.TICK_HZ }));
       this.broadcastElse({ t: 'chat', name: 'SYSTEM', text: `${name} joined the arena`, hue: null }, id);
     }
     return entry;
@@ -91,15 +92,26 @@ class Room {
   }
 
   pickSpawn() {
+    // Spawn NEAR existing players (arena me sab bahut door-door na bikhre —
+    // warna naya player kisi ko dikhta hi nahi). Safe gap 600, anchor = random
+    // existing worm ya arena center jab room khaali ho.
+    let ax = 0, ay = 0;
+    const others = [...this.clients.values()];
+    if (others.length) {
+      const anchor = others[Math.floor(Math.random() * others.length)].worm;
+      ax = anchor.x; ay = anchor.y;
+    }
     for (let tries = 0; tries < 24; tries++) {
       const a = Math.random() * Math.PI * 2;
-      const r = CFG.SPAWN_RADIUS_MIN + Math.random() * (CFG.SPAWN_RADIUS_MAX - CFG.SPAWN_RADIUS_MIN);
-      const x = Math.cos(a) * r;
-      const y = Math.sin(a) * r;
+      const r = 700 + Math.random() * 900; // 700–1600 from anchor — view me aa jayega
+      const x = ax + Math.cos(a) * r;
+      const y = ay + Math.sin(a) * r;
+      const d = Math.hypot(x, y);
+      if (d > CFG.ARENA_R - 300) continue; // wall se door rakho
       let ok = true;
-      for (const c of this.clients.values()) {
+      for (const c of others) {
         const w = c.worm;
-        if (Math.hypot(w.x - x, w.y - y) < 380) { ok = false; break; }
+        if (Math.hypot(w.x - x, w.y - y) < 600) { ok = false; break; }
       }
       if (ok) return { x, y };
     }
@@ -349,6 +361,7 @@ class Room {
         t: 'snap',
         tick: this.tickNum,
         you: id,
+        youKills: c.worm.kills,
         time: now,
         worms: wormsPayload,
         foodNew: newFood,
@@ -396,13 +409,35 @@ class RoomManager {
     setInterval(() => this.gc(), 30000);
   }
 
-  create(maxPlayers) {
-    const room = new Room(maxPlayers);
+  // Sockets parked on the death screen (worm gone) are NOT in room.clients —
+  // track them separately so GC never strands a live player in a deleted room.
+  trackSocket(room, ws) {
+    if (!room.sockets) room.sockets = new Set();
+    room.sockets.add(ws);
+  }
+
+  untrackSocket(room, ws) {
+    if (room.sockets) room.sockets.delete(ws);
+  }
+
+  create(maxPlayers, isPrivate = true) {
+    const room = new Room(maxPlayers, isPrivate);
     // avoid code collision
     while (this.rooms.has(room.code)) room.code = randomCode();
     this.rooms.set(room.code, room);
     room.start();
     return room;
+  }
+
+  // Quick-play matchmaking: join the busiest non-private room with space.
+  // Private (code) rooms are NEVER matched into — they stay friends-only.
+  findPublic() {
+    let best = null;
+    for (const room of this.rooms.values()) {
+      if (room.isPrivate || room.isFull()) continue;
+      if (!best || room.clients.size > best.clients.size) best = room;
+    }
+    return best;
   }
 
   get(code) {
@@ -418,10 +453,13 @@ class RoomManager {
   gc() {
     const now = Date.now();
     for (const [code, room] of this.rooms) {
-      if (room.clients.size === 0 && now - room.emptySince > 120000) {
+      const sockets = room.sockets || new Set();
+      let live = 0;
+      for (const ws of sockets) if (ws.readyState === 1) live++;
+      if (live === 0 && room.clients.size === 0 && now - room.emptySince > 120000) {
         room.stop();
         this.rooms.delete(code);
-      } else if (room.clients.size === 0) {
+      } else if (live === 0 && room.clients.size === 0) {
         // remember when it became empty
         if (!room.emptySince || room.emptySince < now - 120000) room.emptySince = now;
       } else {

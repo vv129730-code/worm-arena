@@ -23,7 +23,7 @@
     <div class="score-line"><span class="lbl">☠</span><b id="hud-kills">0</b></div>
   </div>
   <div id="kill-feed"></div>
-  <div id="room-pill" class="hidden">Room <b id="room-code">------</b><span class="pill-hint">tap to copy</span></div>
+  <div id="room-pill" class="hidden"><span id="room-kind">PRIVATE</span> Room <b id="room-code">------</b><span class="pill-hint">tap to copy</span></div>
   <div id="lb-box">
     <h3>Leaderboard</h3>
     <ol id="lb-list"></ol>
@@ -54,9 +54,24 @@
 
     <div class="lb-mid">
       <div class="lb-menu">
-        <button id="lb-play" class="lb-btn play">▶ PLAY<small>CLASSIC MODE</small></button>
-        <button id="lb-create" class="lb-btn create">+ CREATE ROOM<small>PLAY WITH FRIENDS</small></button>
-        <button id="lb-join" class="lb-btn join">👥 JOIN ROOM<small>ENTER ROOM CODE</small></button>
+        <div class="lb-name-row">
+          <input id="player-name" maxlength="16" placeholder="Player name" autocomplete="off">
+          <div class="lb-online" id="lb-online"><span class="dot"></span><b id="online-count">–</b> online</div>
+        </div>
+        <button id="lb-play" class="lb-btn play">▶ PLAY<small id="play-sub">QUICK MATCH · SABSE PEHLE YE</small></button>
+        <div class="lb-row2">
+          <button id="lb-create" class="lb-btn create">+ CREATE<small>PRIVATE ROOM</small></button>
+          <button id="lb-join" class="lb-btn join">👥 JOIN<small>ROOM CODE</small></button>
+        </div>
+        <div class="lb-joinform hidden" id="lb-joinform">
+          <input id="join-code" maxlength="6" inputmode="numeric" placeholder="000000" autocomplete="off">
+          <button id="btn-join" class="lb-btn go">JOIN</button>
+        </div>
+        <div class="lb-joinform hidden" id="lb-hostform">
+          <input id="host-max" type="number" min="2" max="50" value="10">
+          <button id="btn-host" class="lb-btn go">CREATE</button>
+        </div>
+        <p id="lobby-status" class="status"></p>
       </div>
       <div class="lb-season">
         <span class="lb-season-snake">🐍</span>
@@ -65,17 +80,7 @@
       </div>
     </div>
 
-    <div class="lb-joinform hidden" id="lb-joinform">
-      <input id="join-name" maxlength="16" placeholder="Your name">
-      <input id="join-code" maxlength="6" inputmode="numeric" placeholder="000000" autocomplete="off">
-      <button id="btn-join" class="lb-btn go">JOIN</button>
-    </div>
-    <div class="lb-joinform hidden" id="lb-hostform">
-      <input id="host-name" maxlength="16" placeholder="Your name">
-      <input id="host-max" type="number" min="2" max="50" value="10">
-      <button id="btn-host" class="lb-btn go">CREATE</button>
-    </div>
-    <p id="lobby-status" class="status"></p>
+    <p class="lb-hint">🎯 Boost: click / Space · Steer: mouse · 📱 joystick + BOOST button</p>
   </div>
 
   <div class="lb-nav">
