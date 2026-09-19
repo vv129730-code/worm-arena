@@ -422,6 +422,14 @@ function applySnapshot(s) {
 
   leaderboard = s.lb || [];
   youKills = s.youKills | 0;
+  // stamp arrival time on kill-feed entries so updateHud can expire them (3s)
+  if (s.kills && s.kills.length) {
+    const prevIds = new Set(kills.map((k) => k.tick + ':' + k.victimName));
+    for (const k of s.kills) {
+      const key = k.tick + ':' + k.victimName;
+      if (!prevIds.has(key) && !k.at) k.at = Date.now();
+    }
+  }
   kills = s.kills || [];
   for (const e of leaderboard) {
     const w = worms.get(e.id);
@@ -545,7 +553,7 @@ setInterval(() => { if (ws && ws.readyState === 1) send({ t: 'ack', tick: lastSn
 // hard-reconnect — a healthy server sends 20 snaps/sec, so 4s = dead line.
 setInterval(() => {
   if (dead || myId === null || !ws || ws.readyState !== 1) return;
-  if (performance.now() - lastSnapPerfAt > 4000 && lastSnapPerfAt > 0) {
+  if (performance.now() - lastSnapPerfAt > 1500 && lastSnapPerfAt > 0) {
     try { ws.onclose = null; ws.close(); } catch (e) {}
     ws = null;
     reconnectAndResume();
@@ -583,10 +591,6 @@ function frame(now) {
   render(now);
   if (frameCount % 4 === 0) renderMinimap(); // ~15Hz is plenty for a minimap
 }
-
-// Per-frame safety prune: drop food that provably can't be on screen (cam is
-// always current here). Covers ghost food from missed delta packets. Only
-// active while zoomed-in enough that far food truly isn't visible.
 function pruneFarFood() {
   // Floor mirrors the server's min view clamp (900) so we never prune food
   // the server considers in-view and will never re-send.
@@ -599,9 +603,12 @@ function pruneFarFood() {
   }
 }
 
+// Hybrid loop: rAF for smooth 60fps, PLUS a 4Hz setInterval backstop that
+// keeps rendering when the tab is throttled/backgrounded. rAF stops firing in
+// background tabs — without the backstop the minimap (and everything else)
+// freezes until the tab is foregrounded again. Double-draw is harmless.
+setInterval(() => { if (document.hidden) frame(performance.now()); }, 250);
 requestAnimationFrame(frame);
-
-// Mirror of server radiusAt() (src/game/worm.js) — keep in sync!
 function radiusAt(len) {
   const SOFT = 240, K1 = 3.2, K2 = 0.22;
   const over = Math.max(0, len - 10);
@@ -674,10 +681,14 @@ function updateHud() {
     ).join('');
   }
 
-  const feedKey = kills.map((k) => `${k.killerName}>${k.victimName}`).join('|');
+  // Kill feed: server list is append-only, so show only entries newer than
+  // 3s — old ones vanish without any DOM work when nothing new arrives.
+  const nowMs = Date.now();
+  const recent = kills.filter((k) => (nowMs - (k.at || 0)) < 3000);
+  const feedKey = recent.map((k) => `${k.killerName}>${k.victimName}`).join('|');
   if (feedKey !== lastFeedKey) {
     lastFeedKey = feedKey;
-    elKillFeed.innerHTML = kills.slice(-4).map((k) =>
+    elKillFeed.innerHTML = recent.slice(-4).map((k) =>
       `<div class="feed-line">☠ ${escapeHtml(k.killerName)} ➜ ${escapeHtml(k.victimName)}</div>`
     ).join('');
   }
