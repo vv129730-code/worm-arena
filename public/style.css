@@ -20,8 +20,9 @@ html, body {
 
 #minimap {
   position: fixed;
-  right: 14px;
-  bottom: 14px;
+  /* top-left column: sits below the kills pill (12px) and room pill (52px) */
+  left: 12px;
+  top: 84px;
   border-radius: 50%;
   box-shadow: 0 0 0 2px rgba(120,140,200,0.25);
   opacity: 0;
@@ -267,6 +268,8 @@ body.touch .touch-only { display: block; }
   /* Joystick + boost: smaller, safely inside viewport, thumb-reachable */
   #joy-base { left: 16px; bottom: 20px; width: 112px; height: 112px; }
   #joy-boost { right: 16px; bottom: 30px; width: 80px; height: 80px; font-size: 12px; }
+  /* Minimap compact in the top-left column — clear of the centered kill feed */
+  #minimap { left: 8px; top: 74px; width: 96px; height: 96px; }
   /* Worm name labels less clutter on small screens */
   /* Death panel fits with margin on tiny screens */
   .panel { padding: 20px 18px; }
