@@ -401,6 +401,9 @@ function applySnapshot(s) {
       w.fd = angleLerp(w.fd, w.td, w.segAlpha);
       w.tx = x; w.ty = y; w.td = dir;
       w.segAt = nowP; w.segAlpha = 0;
+      // keep raw server position fresh too — minimap, watchdogs and HUD read
+      // w.x/w.y directly (rendering uses the interpolated fx/fy instead)
+      w.x = x; w.y = y;
       w.len = len; w.boost = boost; w.protect = protect;
     }
     const h = w.history;
@@ -1037,11 +1040,16 @@ function renderMinimap() {
   mmCtx.arc(s / 2, s / 2, s / 2 - 2, 0, Math.PI * 2);
   mmCtx.fill();
   const scale = (s / 2 - 4) / ARENA_R;
+  const now = performance.now();
   for (const w of worms.values()) {
     const isMe = w.id === myId;
+    // interpolated position — dot glides like the worm on screen
+    let px, py;
+    if (w.segAt !== undefined) { [px, py] = wormInterp(w, now); }
+    else { px = w.x; py = w.y; }
     mmCtx.fillStyle = isMe ? '#ffffff' : `hsl(${w.hue},80%,55%)`;
     mmCtx.beginPath();
-    mmCtx.arc(s / 2 + w.x * scale, s / 2 + w.y * scale, isMe ? 3.5 : 2.5, 0, Math.PI * 2);
+    mmCtx.arc(s / 2 + px * scale, s / 2 + py * scale, isMe ? 3.5 : 2.5, 0, Math.PI * 2);
     mmCtx.fill();
   }
 }
