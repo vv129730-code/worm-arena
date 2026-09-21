@@ -470,6 +470,48 @@ cv.addEventListener('contextmenu', (e) => e.preventDefault());
 const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 if (isTouch) document.body.classList.add('touch');
 
+// ---------- mobile: fullscreen + landscape lock ----------
+// Browsers fullscreen aur screen.orientation.lock() ko sirf user-gesture ke
+// andar allow karte hain — page load pe automatically nahi ho sakta. Isliye
+// pehli touch aur PLAY/CREATE/JOIN/RESPAWN taps pe trigger karte hain.
+function goFullscreenLandscape() {
+  if (!isTouch) return;
+  const root = document.documentElement;
+  const req = root.requestFullscreen || root.webkitRequestFullscreen;
+  const active = document.fullscreenElement || document.webkitFullscreenElement;
+  if (req && !active) {
+    try { const p = req.call(root); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+  }
+  const so = screen.orientation;
+  if (so && so.lock) {
+    // lock() ko fullscreen settle hone ke baad call karna padta hai — short delay
+    setTimeout(() => {
+      try { const p = so.lock('landscape'); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+    }, 350);
+  }
+}
+if (isTouch) {
+  document.addEventListener('touchstart', goFullscreenLandscape, { once: true, passive: true });
+  for (const id of ['lb-play', 'lb-create', 'lb-join', 'btn-respawn']) {
+    const b = document.getElementById(id);
+    if (b) b.addEventListener('click', goFullscreenLandscape);
+  }
+}
+
+// Portrait hint: jahan orientation lock support nahi hai (iPhone Safari) wahan
+// game ke dauraan portrait rahne par rotate-your-phone overlay dikhao.
+function updatePortraitHint() {
+  if (!isTouch) return;
+  const portrait = innerHeight > innerWidth;
+  const playing = document.body.classList.contains('playing') && !dead;
+  show($('portrait-overlay'), portrait && playing);
+}
+if (isTouch) {
+  addEventListener('resize', updatePortraitHint);
+  addEventListener('orientationchange', updatePortraitHint);
+  setInterval(updatePortraitHint, 1000);
+}
+
 let joyDir = null;      // last joystick heading (rad); persists when finger lifts
 let touchBoost = false;
 let joyTouchId = null;  // identifier of the finger controlling the stick

@@ -33,6 +33,25 @@ html, body {
 }
 body.playing #minimap { opacity: 1; }
 
+/* ---------- portrait rotate hint (mobile) ---------- */
+#portrait-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(7, 9, 16, 0.96);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.po-card { text-align: center; color: #dfe5f2; padding: 24px; }
+.po-icon { font-size: 56px; animation: po-tilt 1.6s ease-in-out infinite; }
+@keyframes po-tilt {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(-90deg); }
+}
+.po-card h2 { margin: 12px 0 6px; font-size: 22px; letter-spacing: 1px; }
+.po-card p { margin: 0; color: #8fa0c5; font-size: 14px; }
+
 .hidden { display: none !important; }
 
 .panel {
