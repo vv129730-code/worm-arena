@@ -332,7 +332,7 @@ function onMessage(ev) {
     case 'closed':
       // Room was GC'd server-side (everyone dead/idle too long). Drop the
       // player back to the lobby instead of leaving them on a frozen screen.
-      $('lobby-status').textContent = 'Room closed — sab khel se bahar ho gaye the.';
+      $('lobby-status').textContent = 'Room closed — everyone left the arena.';
       try { ws.close(); } catch (e) {}
       break;
     case 'snap':
@@ -613,7 +613,7 @@ async function reconnectAndResume() {
     send({ t: 'join', name: playerName(), code: roomCode, skin: 0, hue: myHue });
     // server may GC the room while we were disconnected — welcome/error will tell
   } catch (e) {
-    $('lobby-status').textContent = 'Reconnecting failed — lobby khol rahe hain.';
+    $('lobby-status').textContent = 'Reconnect failed — back to lobby.';
     document.body.classList.remove('playing');
     show($('lobby'), true);
     show($('hud'), false);
