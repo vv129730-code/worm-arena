@@ -118,7 +118,6 @@ input {
 }
 input:focus { border-color: #6f8cff; }
 #join-code { letter-spacing: 6px; font-size: 20px; text-align: center; }
-
 button.primary, button {
   display: block;
   width: 100%;
@@ -312,112 +311,98 @@ body.touch .touch-only { display: block; }
   .panel { padding: 20px 18px; }
 }
 
-/* ---------- battle-royale lobby ---------- */
+/* ---------- lobby: CLEAN STUDIO ---------- */
 #lobby {
   position: fixed;
   inset: 0;
-  background: #0a0d16;
   z-index: 40;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  background: linear-gradient(180deg, #10151d 0%, #0b0f16 100%);
 }
+/* faint dotted texture — static, invisible at a glance, adds depth */
+#lobby::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image: radial-gradient(rgba(255,255,255,0.028) 1px, transparent 1px);
+  background-size: 26px 26px;
+  pointer-events: none;
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+}
+
 .lb-hero {
   position: relative;
+  z-index: 2;
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  padding: 64px 6vw 16px;
+  padding: 72px 6vw 20px;
   overflow: hidden;
 }
-
-/* photographic background (clean landscape) — buttons float above it */
-.lb-bg {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  object-position: center 62%;
-  z-index: 0;
-}
-.lb-vignette {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  background:
-    linear-gradient(90deg, rgba(6,8,14,0.72) 0%, rgba(6,8,14,0.32) 48%, rgba(6,8,14,0.10) 72%),
-    linear-gradient(0deg, rgba(6,8,14,0.88) 0%, transparent 32%);
-}
-
-/* lift content above the bg; leave bg/vignette/topbar positioning untouched */
-.lb-hero > *:not(.lb-bg):not(.lb-vignette):not(.lb-top) { position: relative; z-index: 2; }
+.lb-title, .lb-tag, .lb-mid { position: relative; z-index: 2; }
 
 .lb-top {
   position: absolute;
-  top: 12px; left: 5vw; right: 5vw;
+  top: 16px; left: 5vw; right: 5vw;
   display: flex;
   justify-content: space-between;
   align-items: center;
   z-index: 3;
 }
-.lb-player { display: flex; align-items: center; gap: 10px; }
+.lb-player {
+  display: flex; align-items: center; gap: 10px;
+  background: #161d29;
+  border: 1px solid #232c3b;
+  border-radius: 14px;
+  padding: 7px 14px 7px 8px;
+}
 .lb-avatar {
-  width: 52px; height: 52px;
+  width: 40px; height: 40px;
   border-radius: 10px;
-  border: 2px solid #f5c518;
-  background: rgba(10,12,20,0.8);
+  border: none;
+  background: #1d2532;
   display: flex; align-items: center; justify-content: center;
-  font-size: 28px;
-  box-shadow: 0 0 12px rgba(245,197,24,0.35);
+  font-size: 22px;
 }
-.lb-pname { font-weight: 800; font-size: 16px; text-shadow: 0 2px 4px #000; }
-.lb-rank { font-size: 12px; color: #f5c518; }
-.lb-currency { display: flex; gap: 10px; }
+.lb-pname { font-weight: 700; font-size: 14px; color: #eef1f7; }
+.lb-rank { font-size: 11px; color: #8b98ad; }
+.lb-currency { display: flex; gap: 8px; }
 .lb-currency span {
-  background: rgba(8,10,18,0.85);
-  border: 1px solid rgba(255,255,255,0.15);
-  border-radius: 18px;
-  padding: 6px 14px;
+  background: #161d29;
+  border: 1px solid #232c3b;
+  border-radius: 12px;
+  padding: 8px 13px;
   font-weight: 700;
-  font-size: 14px;
+  font-size: 13px;
+  color: #c8d0dd;
 }
-.lb-currency .coin { color: #ffd75e; }
-.lb-currency .gem { color: #ff6f91; }
+.lb-currency .coin { color: #e8c35a; }
+.lb-currency .gem { color: #7fa6f0; }
 
 .lb-title {
-  font-size: clamp(38px, 7vw, 72px);
-  line-height: 0.9;
-  font-weight: 900;
-  letter-spacing: 2px;
-  margin: 0 0 4px;
-  color: #ffd23f;
-  text-shadow:
-    0 2px 0 #7a4a00,
-    0 5px 0 #4a2c00,
-    0 10px 24px rgba(0,0,0,0.7);
-  -webkit-text-stroke: 1px #2b1a00;
-  font-family: 'Arial Black', system-ui, sans-serif;
+  font-size: clamp(34px, 6vw, 62px);
+  line-height: 1.04;
+  font-weight: 800;
+  letter-spacing: 1px;
+  margin: 0 0 6px;
+  color: #f4f6fb;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
-.lb-title span {
-  display: inline-block;
-  background: #e8ecf5;
-  color: #12141c;
-  padding: 2px 14px;
-  border-radius: 6px;
-  letter-spacing: 10px;
-  font-size: 0.42em;
-  -webkit-text-stroke: 0;
-  box-shadow: 0 4px 14px rgba(0,0,0,0.5);
-}
+.lb-title span { color: #f2b31c; }
 .lb-tag {
-  color: #e8d5a8;
-  letter-spacing: 5px;
-  font-size: 12px;
-  margin-bottom: 16px;
-  text-shadow: 0 2px 6px rgba(0,0,0,0.6);
+  color: #77839a;
+  letter-spacing: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 26px;
 }
 
 /* mid row: menu left, season card right */
@@ -428,40 +413,49 @@ body.touch .touch-only { display: block; }
   gap: 20px;
   flex-wrap: wrap;
 }
-.lb-menu { display: flex; flex-direction: column; gap: 12px; width: min(380px, 88vw); }
+.lb-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(380px, 88vw);
+  background: #151b26;
+  border: 1px solid #232c3b;
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: 0 12px 34px rgba(0,0,0,0.35);
+}
 
 /* name + online counter row */
 .lb-name-row { display: flex; gap: 8px; align-items: center; }
 .lb-name-row input {
   flex: 1;
   min-width: 0;
-  background: rgba(8,10,18,0.85);
-  border: 2px solid rgba(255,255,255,0.18);
+  background: #0f141d;
+  border: 1px solid #26303f;
   border-radius: 10px;
-  color: #fff;
+  color: #eef1f7;
   padding: 11px 14px;
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 600;
 }
-.lb-name-row input:focus { outline: none; border-color: #f5c518; }
+.lb-name-row input:focus { outline: none; border-color: #f2b31c; }
 .lb-online {
   display: flex;
   align-items: center;
   gap: 6px;
-  background: rgba(8,10,18,0.85);
-  border: 1px solid rgba(255,255,255,0.14);
+  background: #0f141d;
+  border: 1px solid #26303f;
   border-radius: 10px;
   padding: 10px 12px;
   font-size: 12px;
-  color: #9aa3b8;
+  color: #8b98ad;
   white-space: nowrap;
 }
-.lb-online b { color: #4ade80; font-size: 15px; }
+.lb-online b { color: #46d47e; font-size: 15px; }
 .lb-online .dot {
-  width: 8px; height: 8px;
+  width: 7px; height: 7px;
   border-radius: 50%;
-  background: #22c55e;
-  box-shadow: 0 0 8px #22c55e;
+  background: #2f9e5f;
   animation: onlinePulse 2s ease-in-out infinite;
 }
 @keyframes onlinePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
@@ -471,16 +465,16 @@ body.touch .touch-only { display: block; }
 .lb-row2 .lb-btn { flex: 1; font-size: 15px; padding: 11px 12px; }
 .lb-row2 .lb-btn small { font-size: 9px; letter-spacing: 2px; }
 .lb-hint {
-  color: rgba(220,228,245,0.55);
+  color: rgba(220,228,245,0.5);
   font-size: 11px;
-  letter-spacing: 1px;
-  margin-top: 14px;
-  text-shadow: 0 1px 3px #000;
+  letter-spacing: 0.5px;
+  margin-top: 2px;
+  text-align: center;
 }
 #room-kind {
-  background: rgba(245,197,24,0.15);
-  border: 1px solid rgba(245,197,24,0.5);
-  color: #ffd23f;
+  background: rgba(242,179,28,0.12);
+  border: 1px solid rgba(242,179,28,0.45);
+  color: #f2b31c;
   font-size: 9px;
   font-weight: 800;
   letter-spacing: 1px;
@@ -494,66 +488,67 @@ body.touch .touch-only { display: block; }
   display: block;
   width: 100%;
   text-align: left;
-  border: none;
+  border: 1px solid transparent;
   cursor: pointer;
   border-radius: 12px;
-  padding: 14px 20px;
-  font-size: 20px;
-  font-weight: 900;
-  letter-spacing: 1px;
+  padding: 12px 18px;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
   color: #fff;
-  text-shadow: 0 2px 4px rgba(0,0,0,0.55);
-  box-shadow: 0 6px 18px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.25);
-  transition: transform 0.08s ease, filter 0.12s ease;
+  transition: transform 0.08s ease, filter 0.12s ease, border-color 0.12s ease;
 }
 .lb-btn small {
   display: block;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
-  letter-spacing: 3px;
-  opacity: 0.85;
+  letter-spacing: 1.5px;
+  opacity: 0.75;
   margin-top: 2px;
 }
-.lb-btn:active { transform: scale(0.98); }
-.lb-btn:hover { filter: brightness(1.1); }
+.lb-btn:active { transform: scale(0.985); }
+.lb-btn:hover { filter: brightness(1.07); }
+/* PRIMARY: flat amber, dark text — professional, high contrast */
 .lb-btn.play {
-  background: linear-gradient(180deg, #ffdf5e 0%, #f5b913 55%, #d99a06 100%);
-  color: #2b1d00;
-  border: 2px solid #ffe98a;
-  font-size: 26px;
-  padding: 14px 20px;
-  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 14px), calc(100% - 22px) 100%, 0 100%);
+  background: #f2b31c;
+  color: #16130a;
+  font-size: 20px;
+  padding: 13px 18px;
+  border-radius: 12px;
 }
+.lb-btn.play:hover { background: #f7c23e; }
 .lb-btn.create {
-  background: linear-gradient(180deg, #3f8ef7 0%, #1f5fd0 100%);
-  border: 2px solid #7db4ff;
+  background: #232c3b;
+  border-color: #2e3949;
+  border-radius: 12px;
 }
 .lb-btn.join {
-  background: linear-gradient(180deg, #2fbf71 0%, #178a4c 100%);
-  border: 2px solid #6fe3a5;
+  background: #232c3b;
+  border-color: #2e3949;
+  border-radius: 12px;
 }
 .lb-btn.go {
-  background: linear-gradient(180deg, #ffdf5e 0%, #f0b310 100%);
-  color: #2b1d00;
+  background: #f2b31c;
+  color: #16130a;
   text-align: center;
-  padding: 12px;
+  padding: 11px;
+  border-radius: 10px;
 }
+.lb-btn.go:hover { background: #f7c23e; }
 
 .lb-season {
   display: flex;
   align-items: center;
   gap: 12px;
-  background: rgba(8,10,18,0.88);
-  border: 2px solid #f5c518;
-  border-radius: 12px;
-  padding: 10px 16px;
-  box-shadow: 0 0 18px rgba(245,197,24,0.25);
-  z-index: 3;
+  background: #151b26;
+  border: 1px solid #232c3b;
+  border-radius: 14px;
+  padding: 12px 16px;
 }
-.lb-season-snake { font-size: 34px; }
-.lb-season b { color: #ffd23f; letter-spacing: 2px; display: block; }
-.lb-season small { color: #cbb87a; letter-spacing: 2px; font-size: 10px; }
-.lb-arrow { color: #ffd23f; font-size: 26px; }
+.lb-season-snake { font-size: 30px; }
+.lb-season b { color: #eef1f7; letter-spacing: 1px; display: block; }
+.lb-season small { color: #8b98ad; letter-spacing: 1.5px; font-size: 10px; }
+.lb-arrow { color: #4d5a70; font-size: 24px; }
 
 .lb-joinform {
   display: flex;
@@ -572,44 +567,81 @@ body.touch .touch-only { display: block; }
   padding: 12px 14px;
   font-size: 15px;
 }
-.lb-joinform input:focus { outline: none; border-color: #f5c518; }
+.lb-joinform input:focus { outline: none; border-color: #f2b31c; }
 .lb-joinform .go { width: auto; flex: 0 0 auto; font-size: 16px; }
 .lb-joinform input[type=number] { max-width: 90px; }
 #join-code { letter-spacing: 6px; }
+.lb-joinform input {
+  background: #0f141d;
+  border: 1px solid #26303f;
+  border-radius: 10px;
+}
 
+/* floating bottom DOCK — sab tabs ek connected pill me, screen edge se
+   thoda upar (premium app feel). Hover/press/active — sab interactive. */
 .lb-nav {
+  position: relative;
   display: flex;
-  justify-content: space-between;
+  align-items: center;
   gap: 4px;
-  background: rgba(6,8,14,0.97);
-  border-top: 1px solid rgba(255,255,255,0.08);
-  padding: 6px 4px calc(6px + env(safe-area-inset-bottom));
+  width: fit-content;
+  margin: 0 auto calc(14px + env(safe-area-inset-bottom));
+  background: #151b26;
+  border: 1px solid #232c3b;
+  border-radius: 999px;
+  padding: 6px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.45);
   z-index: 5;
   flex: 0 0 auto;
-  overflow-x: auto;
-  scrollbar-width: none;
 }
-.lb-nav::-webkit-scrollbar { display: none; }
 .lb-nav-btn {
-  background: none;
+  background: transparent;
   border: none;
-  color: #8a93a8;
-  font-weight: 800;
-  letter-spacing: 1px;
-  font-size: 11px;
-  padding: 8px 5px;
+  color: #93a0b5;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  font-size: 12px;
+  padding: 9px 16px;
   cursor: pointer;
-  border-radius: 8px;
+  border-radius: 999px;
   white-space: nowrap;
-  flex: 0 1 auto;
-  min-width: 0;
+  flex: 0 0 auto;
+  width: auto; /* beats the generic `button { width: 100% }` base rule */
+  display: inline-block;
+  margin: 0;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
 }
-@media (max-width: 640px) {
-  .lb-nav-btn { font-size: 10px; padding: 8px 4px; letter-spacing: 0.5px; }
+.lb-nav-btn:hover { background: #1d2532; color: #eef1f7; transform: translateY(-1px); }
+.lb-nav-btn:active { transform: scale(0.92); }
+.lb-nav-btn.active {
+  background: rgba(242,179,28,0.14);
+  color: #f2b31c;
 }
-.lb-nav-btn.active { color: #ffd23f; box-shadow: 0 3px 0 #ffd23f; }
-.lb-nav-btn:hover { color: #dfe5f2; }
-.lb-nav-btn.soon { opacity: 0.75; }
+.lb-nav-btn.soon { opacity: 0.5; }
+.lb-nav-btn.soon:hover { opacity: 0.85; }
+
+/* small screens: 5 equal cells, emoji upar + chhota label neeche */
+@media (max-width: 560px) {
+  .lb-nav {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 2px;
+    width: min(94vw, 400px);
+    border-radius: 18px;
+    padding: 6px 8px;
+  }
+  .lb-nav-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    font-size: 17px;
+    padding: 7px 2px;
+    border-radius: 12px;
+    text-align: center;
+  }
+  .lb-nav-btn span { display: block; font-size: 8.5px; letter-spacing: 0.2px; }
+}
 
 /* coming soon toast */
 #soon-toast {
@@ -617,13 +649,13 @@ body.touch .touch-only { display: block; }
   left: 50%;
   bottom: 96px;
   transform: translateX(-50%) translateY(20px);
-  background: rgba(10,13,24,0.95);
-  border: 1px solid #f5c518;
-  color: #ffe28a;
+  background: #1a2230;
+  border: 1px solid #2e3949;
+  color: #c8d0dd;
   padding: 12px 22px;
   border-radius: 12px;
   font-weight: 700;
-  letter-spacing: 1px;
+  letter-spacing: 0.5px;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.25s, transform 0.25s;
@@ -635,22 +667,22 @@ body.touch .touch-only { display: block; }
 .lb-inventory {
   position: fixed;
   inset: 0;
-  background: rgba(4,6,10,0.75);
-  backdrop-filter: blur(4px);
+  background: rgba(4,6,10,0.78);
+  backdrop-filter: blur(6px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 55;
 }
 .inv-card {
-  background: linear-gradient(180deg, #141927 0%, #0d1119 100%);
-  border: 2px solid rgba(245,197,24,0.5);
+  background: #151b26;
+  border: 1px solid #2e3949;
   border-radius: 16px;
   padding: 22px 26px;
   width: min(92vw, 460px);
-  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+  box-shadow: 0 24px 70px rgba(0,0,0,0.55);
 }
-.inv-card h2 { color: #ffd23f; letter-spacing: 2px; margin-bottom: 4px; }
+.inv-card h2 { color: #f2b31c; letter-spacing: 1px; margin-bottom: 4px; }
 .inv-sub { color: #9aa3b8; font-size: 13px; margin-bottom: 14px; }
 .snake-preview-wrap {
   background: radial-gradient(circle at 50% 40%, #1b2233, #0a0e18);
@@ -681,8 +713,8 @@ body.touch .touch-only { display: block; }
   font-size: 13px;
   margin-bottom: 16px;
 }
-.custom-hue input { flex: 1; accent-color: #f5c518; }
-.custom-hue span { min-width: 34px; text-align: right; color: #ffd23f; font-weight: 700; }
+.custom-hue input { flex: 1; accent-color: #f2b31c; }
+.custom-hue span { min-width: 34px; text-align: right; color: #f2b31c; font-weight: 700; }
 .inv-card .go { width: 100%; }
 
 /* compact screens: everything fits without scroll (NO cut-off options) */
@@ -692,6 +724,9 @@ body.touch .touch-only { display: block; }
     justify-content: flex-start;
     gap: 0;
   }
+  /* center the block when the screen is tall; collapse to top-fit when tight */
+  .lb-title { margin-top: auto; }
+  .lb-mid { margin-bottom: auto; }
   .lb-top { position: static; padding: 0 0 6px; }  /* flow with content, not absolute */
   .lb-title { font-size: clamp(26px, 6.5vw, 40px); margin-bottom: 2px; }
   .lb-tag { margin-bottom: 8px; letter-spacing: 2px; font-size: 10px; }
@@ -710,7 +745,7 @@ body.touch .touch-only { display: block; }
   .lb-season { display: none; }               /* wasted width on phones */
   .lb-hint { display: none; }
   .lb-nav { padding: 4px 2px calc(4px + env(safe-area-inset-bottom)); }
-  .lb-nav-btn { font-size: 9px; padding: 7px 3px; }
+  .lb-nav-btn { padding: 7px 2px; }
 }
 
 /* very short landscape phones: shrink chrome further so PLAY always visible */
@@ -727,5 +762,4 @@ body.touch .touch-only { display: block; }
   .lb-row2 .lb-btn { font-size: 12px; padding: 6px 9px; }
   .lb-name-row input, .lb-joinform input { padding: 7px 10px; font-size: 13px; }
   .lb-online { padding: 6px 8px; font-size: 9px; }
-  .lb-nav-btn { font-size: 8px; padding: 5px 3px; }
 }
