@@ -35,7 +35,7 @@ function radiusAt(len) {
 }
 
 // Growth value taper: full value below GROWTH_SOFT_CAP, easing down to
-// GROWTH_TAPER_MIN by ~10x the cap. Score/length keep rising, just slower.
+// GROWTH_TAPER_MIN by ~10x the cap.
 function growthWeight(len) {
   const cap = CFG.GROWTH_SOFT_CAP;
   if (len <= cap) return 1;
@@ -59,6 +59,12 @@ function newWorm(id, name, hue, skin, x, y) {
     boosting: false,
     boostEmitT: 0,
     points: [[x, y]],
+    // PERF: stored per-point segment lengths (dist to PREVIOUS point, [0]=0).
+    // trimPath becomes amortized O(1) — no full-path walk per tick.
+    segLens: [0],
+    // Parallel flag per point: 1 = already in the room's body spatial hash.
+    // Lets the room keep the body index incremental with zero drift.
+    ptIns: [0],
     pathLen: 0,
     acc: 0,          // distance traveled since last recorded path point
     dead: false,
@@ -80,7 +86,11 @@ function advance(w, dist) {
     w.acc += s;
     remaining -= s;
     if (w.acc >= SEG) {
-      w.points.unshift([w.x, w.y]);
+      // PERF: inline hypot — the previous point is exactly (w.x-cos*acc,
+      // w.y-sin*acc), avoiding an array dereference per path point.
+      w.segLens.push(w.acc);
+      w.points.push([w.x, w.y]);
+      w.ptIns.push(0);
       w.pathLen += w.acc;
       w.acc = 0;
       w.pointsAdded++;
@@ -88,28 +98,49 @@ function advance(w, dist) {
   }
 }
 
-// Trim path so its total length == len * PATH_PER_LEN. Returns tail cut point or null.
+// Trim path so its total length == len * PATH_PER_LEN.
+// PERF: amortized O(1) — pops whole tail segments using stored segLens and
+// makes ONE exact cut. The old version re-walked the ENTIRE path every tick
+// (O(n) per worm per tick at 30Hz; giants have ~500-1600 points).
 function trimPath(w) {
   const need = w.len * CFG.PATH_PER_LEN;
   const pts = w.points;
-  let total = 0;
-  for (let i = 0; i < pts.length - 1; i++) {
-    const d = Math.hypot(pts[i][0] - pts[i + 1][0], pts[i][1] - pts[i + 1][1]);
-    if (total + d >= need) {
-      const remain = need - total;
-      const t = remain / (d || 1e-9);
-      const tx = pts[i + 1][0] + (pts[i][0] - pts[i + 1][0]) * t;
-      const ty = pts[i + 1][1] + (pts[i][1] - pts[i + 1][1]) * t;
-      pts.splice(i + 1);
-      pts.push([tx, ty]);
-      w.pathLen = total + remain;
-      return [tx, ty];
-    }
-    total += d;
+  if (pts.length < 2) { w.pathLen = 0; return null; }
+
+  // Fast path: whole segments can be popped from the tail.
+  while (pts.length > 1 && w.pathLen - w.segLens[pts.length - 1] > need) {
+    const p = pts.pop();
+    w.pathLen -= w.segLens.pop();
+    removedIns.push(w.ptIns.pop() || 0);
+    removedPts.push(p);
   }
-  // Path shorter than needed (just spawned/grown) — it will grow naturally.
-  w.pathLen = total;
-  return null;
+  if (pts.length === 1) { w.pathLen = 0; return pts[0]; }
+
+  // Exact cut inside the last segment (single hypot, no walk).
+  const last = pts[pts.length - 1];
+  const prev = pts[pts.length - 2];
+  const segLen = w.segLens[pts.length - 1];
+  const over = w.pathLen - need;
+  if (over > 0 && segLen > 1e-9) {
+    const t = over / segLen;
+    const tx = last[0] + (prev[0] - last[0]) * t;
+    const ty = last[1] + (prev[1] - last[1]) * t;
+    last[0] = tx; last[1] = ty;
+    w.pathLen = need;
+    w.segLens[pts.length - 1] = segLen - over;
+  }
+  return last;
+}
+
+// PERF: shared scratch to hand trimmed tail points + their hash-insert flags
+// to the room (keeps the incremental body index exact) — zero allocation.
+const removedPts = [];
+const removedIns = [];
+const removedOut = { points: removedPts, flags: removedIns };
+function takeRemovedPoints() {
+  removedPts.length = 0;
+  removedIns.length = 0;
+  return removedOut;
 }
 
 function steer(w, dir) {
@@ -156,6 +187,7 @@ module.exports = {
   newWorm,
   advance,
   trimPath,
+  takeRemovedPoints,
   steer,
   stepHeading,
   gain,

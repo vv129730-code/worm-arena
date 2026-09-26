@@ -56,13 +56,22 @@ const elLbList = $('lb-list');
 const elKillFeed = $('kill-feed');
 
 // Capped DPR: full devicePixelRatio on hi-dpi screens = 4x pixel fill = lag.
+// The perf governor may force DPR 1.0 on weak devices (perfStep calls resize).
 let DPR = Math.min(window.devicePixelRatio || 1, 1.5);
-function resize() {
-  DPR = Math.min(window.devicePixelRatio || 1, 1.5);
+let forcedDpr = 0; // 0 = auto, otherwise governor-set DPR
+// Declared BEFORE resize() — resize runs at load time and mutates these
+// (a later `let` would be a temporal-dead-zone ReferenceError).
+let bgCanvas = null;
+let camPendDirty = true, _vrCache = 1200, _vrKey = '';
+function resize(forceDpr) {
+  if (forceDpr !== undefined) forcedDpr = forceDpr;
+  DPR = forcedDpr || Math.min(window.devicePixelRatio || 1, 1.5);
   cv.width = window.innerWidth * DPR;
   cv.height = window.innerHeight * DPR;
   cv.style.width = window.innerWidth + 'px';
   cv.style.height = window.innerHeight + 'px';
+  bgCanvas = null; // backdrop must re-bake at the new resolution
+  camPendDirty = true;
 }
 window.addEventListener('resize', resize);
 resize();
@@ -314,6 +323,7 @@ function onMessage(ev) {
       roomCode = msg.roomCode;
       maxPlayers = msg.maxPlayers;
       dead = false;
+      portraitHintDone = false; // fresh session — hint may show again if needed
       document.body.classList.add('playing');
       show($('lobby'), false);
       show($('inventory'), false);
@@ -337,6 +347,7 @@ function onMessage(ev) {
       break;
     case 'snap':
       applySnapshot(msg);
+      updateHud(); // HUD is event-driven now (was per-frame)
       break;
     case 'died':
       onDied(msg.by);
@@ -396,8 +407,8 @@ function applySnapshot(s) {
     } else {
       // Slide the segment: the position we're currently displaying becomes the
       // new origin, so motion stays continuous even with jitter/missed packets.
-      const [ix, iy] = wormInterp(w, nowP);
-      w.fx = ix; w.fy = iy;
+      wormInterp(w, nowP);
+      w.fx = _ix; w.fy = _iy;
       w.fd = angleLerp(w.fd, w.td, w.segAlpha);
       w.tx = x; w.ty = y; w.td = dir;
       w.segAt = nowP; w.segAlpha = 0;
@@ -473,38 +484,67 @@ if (isTouch) document.body.classList.add('touch');
 // ---------- mobile: fullscreen + landscape lock ----------
 // Browsers fullscreen aur screen.orientation.lock() ko sirf user-gesture ke
 // andar allow karte hain — page load pe automatically nahi ho sakta. Isliye
-// pehli touch aur PLAY/CREATE/JOIN/RESPAWN taps pe trigger karte hain.
+// FIRST touch/click anywhere (site kholte hi) + PLAY/CREATE/JOIN/RESPAWN taps
+// pe trigger karte hain — game start hone tak landscape already locked.
+let lockTries = 0;
+function tryOrientationLock() {
+  const so = screen.orientation;
+  if (so && so.lock) {
+    // lock() ko fullscreen settle hone ke baad call karna padta hai — short
+    // delay, plus a second retry (some browsers drop the first attempt).
+    setTimeout(() => {
+      try { const p = so.lock('landscape'); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+    }, 120);
+    if (lockTries++ < 3) setTimeout(() => {
+      try { const p = so.lock('landscape'); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+    }, 600);
+  }
+}
 function goFullscreenLandscape() {
   if (!isTouch) return;
   const root = document.documentElement;
-  const req = root.requestFullscreen || root.webkitRequestFullscreen;
+  const req = root.requestFullscreen || root.webkitRequestFullscreen || root.webkitRequestFullScreen;
   const active = document.fullscreenElement || document.webkitFullscreenElement;
   if (req && !active) {
-    try { const p = req.call(root); if (p && p.catch) p.catch(() => {}); } catch (e) {}
-  }
-  const so = screen.orientation;
-  if (so && so.lock) {
-    // lock() ko fullscreen settle hone ke baad call karna padta hai — short delay
-    setTimeout(() => {
-      try { const p = so.lock('landscape'); if (p && p.catch) p.catch(() => {}); } catch (e) {}
-    }, 350);
+    try {
+      const p = req.call(root, { navigationUI: 'hide' });
+      if (p && p.then) p.then(tryOrientationLock).catch(tryOrientationLock);
+      else tryOrientationLock();
+    } catch (e) { tryOrientationLock(); }
+  } else {
+    tryOrientationLock();
   }
 }
 if (isTouch) {
+  // FIRST interaction anywhere on the site (lobby hi kafi hai) — not just PLAY
   document.addEventListener('touchstart', goFullscreenLandscape, { once: true, passive: true });
+  document.addEventListener('click', goFullscreenLandscape, { once: true });
+  // Re-assert when returning to the tab / rotating (best-effort, harmless if denied)
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) goFullscreenLandscape(); });
+  addEventListener('orientationchange', () => setTimeout(goFullscreenLandscape, 300));
   for (const id of ['lb-play', 'lb-create', 'lb-join', 'btn-respawn']) {
     const b = document.getElementById(id);
     if (b) b.addEventListener('click', goFullscreenLandscape);
   }
 }
 
-// Portrait hint: jahan orientation lock support nahi hai (iPhone Safari) wahan
-// game ke dauraan portrait rahne par rotate-your-phone overlay dikhao.
+// Portrait hint — NON-BLOCKING: landscape+fullscreen is now forced on the
+// very first touch, so a permanent blocker mid-game is just a nag. If the
+// device somehow is still portrait while playing (iPhone Safari etc.), show
+// a small hint ONCE for 2.5s — never interrupt the actual gameplay.
+let portraitHintDone = false;
+let portraitHintTimer = null;
 function updatePortraitHint() {
   if (!isTouch) return;
   const portrait = innerHeight > innerWidth;
+  if (!portrait) { show($('portrait-overlay'), false); return; }
   const playing = document.body.classList.contains('playing') && !dead;
-  show($('portrait-overlay'), portrait && playing);
+  if (playing && !portraitHintDone) {
+    portraitHintDone = true;
+    show($('portrait-overlay'), true);
+    clearTimeout(portraitHintTimer);
+    portraitHintTimer = setTimeout(() => show($('portrait-overlay'), false), 2500);
+  }
 }
 if (isTouch) {
   addEventListener('resize', updatePortraitHint);
@@ -624,17 +664,47 @@ async function reconnectAndResume() {
 let lastFrame = performance.now();
 let hudLen = 10;
 let frameCount = 0;
+let nowFrame = lastFrame; // shared per-frame clock — wormInterp/drawWorm read this
+
+// ---------- PERFORMANCE GOVERNOR ----------
+// Measures real frame time (EMA). Sustained slow frames => drop expensive
+// render layers + reduce DPR; when fast again, restore quality. This is what
+// keeps weak phones at a rock-steady fps instead of periodic stutter.
+const perf = {
+  ema: 16.7,       // ms per frame, exponential moving average
+  mode: 1,         // 2 = full quality, 1 = reduced, 0 = minimal (survival)
+  lastSwitch: 0,
+};
+function perfStep(now) {
+  const dt = now - lastFrame;
+  if (dt > 0 && dt < 250) perf.ema += (dt - perf.ema) * 0.05;
+  if (now - perf.lastSwitch < 1500) return; // let each mode settle before judging
+  if (perf.ema > 24 && perf.mode > 0) {          // < ~40fps sustained
+    perf.mode--;
+    perf.lastSwitch = now;
+    if (perf.mode === 1) resize(1.0);            // drop DPR first (biggest win)
+  } else if (perf.ema < 17.5 && perf.mode < 2) { // comfortably at 60fps again
+    perf.mode++;
+    perf.lastSwitch = now;
+    if (perf.mode === 2) resize();               // restore DPR
+  }
+}
 
 function frame(now) {
   requestAnimationFrame(frame);
   lastFrame = now;
+  nowFrame = now;
   frameCount++;
 
+  perfStep(now);
   updateCamera();
-  pruneFarFood();
-  updateHud();
+  // Housekeeping runs on a schedule, not per frame — pruneFarFood walks a
+  // ~2600-entry Map and viewRadius() does two divides + a sqrt.
+  if (frameCount % 8 === 0) { pruneFarFood(); camPendDirty = true; }
   render(now);
-  if (frameCount % 4 === 0) renderMinimap(); // ~15Hz is plenty for a minimap
+  if (frameCount % 6 === 0) renderMinimap(); // 10Hz is plenty for a minimap
+  // HUD updates are EVENT-DRIVEN (updateHud is called from applySnapshot and
+  // the expiry timers) — per-frame leaderboard string building is gone.
 }
 function pruneFarFood() {
   // Floor mirrors the server's min view clamp (900) so we never prune food
@@ -647,6 +717,10 @@ function pruneFarFood() {
     if (dx * dx + dy * dy > lim * lim) foods.delete(id);
   }
 }
+
+// Housekeeping throttle: pruneFarFood (a ~2600-entry Map walk) twice a
+// second is invisible — per-frame was wasteful.
+setInterval(() => { if (!document.hidden) { pruneFarFood(); camPendDirty = true; } }, 500);
 
 // Hybrid loop: rAF for smooth 60fps, PLUS a 4Hz setInterval backstop that
 // keeps rendering when the tab is throttled/backgrounded. rAF stops firing in
@@ -665,11 +739,17 @@ function radiusAt(len) {
 // Smoothly traverse a worm's current from->to segment (60fps motion from
 // 20Hz snapshots). Slight overshoot (1.25x) keeps giants gliding if a
 // snapshot arrives late. Stores segAlpha for angle blending.
+// PERF: writes into shared scratch vars (_ix/_iy) instead of allocating a
+// [x,y] array per call — this runs ~5x per worm per frame (body, camera,
+// minimap) and was a major GC churn source at 60fps.
+let _ix = 0, _iy = 0;
 function wormInterp(w, now) {
   const t = (now - w.segAt) / Math.max(snapPeriodMs, 20);
   const a = t < 0 ? 0 : t > 1.25 ? 1.25 : t;
   w.segAlpha = a;
-  return [w.fx + (w.tx - w.fx) * a, w.fy + (w.ty - w.fy) * a];
+  _ix = w.fx + (w.tx - w.fx) * a;
+  _iy = w.fy + (w.ty - w.fy) * a;
+  return a;
 }
 
 // Shortest-arc angle interpolation (no 350°->0° spins)
@@ -684,14 +764,28 @@ function updateCamera() {
   const target = worms.get(myId);
   if (target && !dead) {
     // Camera rides the INTERPOLATED head — buttery pan, no 20Hz snapping.
-    const [ix, iy] = wormInterp(target, performance.now());
-    cam.x = ix;
-    cam.y = iy;
+    wormInterp(target, nowFrame);
+    cam.x = _ix;
+    cam.y = _iy;
   }
   const len = target ? target.len : hudLen;
   const r = radiusAt(len);
   const targetZoom = Math.max(0.35, Math.min(1.1, 42 / (r + 26)));
-  cam.zoom += (targetZoom - cam.zoom) * 0.05;
+  // PERF: cache the raw target zoom; the exponential smoothing is applied in
+  // render() using the real frame delta so speed is frame-rate independent.
+  cam.targetZoom = targetZoom;
+  return r;
+}
+
+// Cache of radiusAt(len) — same (len) must map to the same radius within one
+// frame; drawWorm previously recomputed it per worm per layer.
+let _radiusCacheLen = -1, _radiusCacheVal = 9;
+function radiusAtCached(len) {
+  if (len !== _radiusCacheLen) {
+    _radiusCacheLen = len;
+    _radiusCacheVal = radiusAt(len);
+  }
+  return _radiusCacheVal;
 }
 
 // Chat / SYSTEM lines share the kill-feed slot (top-center pills)
@@ -709,6 +803,10 @@ function addKillFeed(text) {
   }, 4000);
 }
 
+// ---------- EVENT-DRIVEN HUD ----------
+// updateHud() is called on SNAPSHOT arrivals and on a 500ms expiry timer —
+// never per frame. Previously it ran at 60Hz building lb/feed strings even
+// when nothing changed (allocation + layout-check churn).
 function updateHud() {
   const me = worms.get(myId);
   if (me) hudLen = Math.floor(me.len);
@@ -738,7 +836,30 @@ function updateHud() {
     ).join('');
   }
 }
+setInterval(() => { if (lastFeedKey) updateHud(); }, 500); // expire kill-feed entries
+
+// Score + kill counter now refresh on SNAPSHOT events (5-20Hz) instead of
+// per frame — the values change at most at snapshot rate anyway.
+setInterval(updateScoreHud, 100);
+function updateScoreHud() {
+  const me = worms.get(myId);
+  if (me) {
+    const l = Math.floor(me.len);
+    if (l !== hudLen) { hudLen = l; scoreDirty = true; }
+  }
+  if (scoreDirty) {
+    scoreDirty = false;
+    const sc = $('score');
+    if (sc) sc.textContent = hudLen;
+    const kl = $('hud-kills');
+    if (kl) kl.textContent = (typeof youKills === 'number') ? youKills : 0;
+  }
+}
+let scoreDirty = false;
 let lastLbKey = '', lastFeedKey = '', youKills = 0;
+
+// Scratch array for the visible-food batch in render() — reused every frame.
+const foodDrawScratch = [];
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -753,10 +874,22 @@ let camPanX = 0, camPanY = 0, camPanInit = false;
 // Visible half-extents (world units) — set each frame in render(), used by
 // drawWorm to stop building body polylines that are far off-screen.
 let viewHalfW = 800, viewHalfH = 600;
+// (camPendDirty/_vrCache/_vrKey declared near resize() — see top of file.)
+function viewRadius() {
+  const key = cv.clientWidth + 'x' + cv.clientHeight + '@' + (cam.zoom * 100 | 0);
+  if (camPendDirty || key !== _vrKey) {
+    _vrKey = key;
+    camPendDirty = false;
+    const halfW = cv.clientWidth / 2 / Math.max(cam.zoom, 0.01);
+    const halfH = cv.clientHeight / 2 / Math.max(cam.zoom, 0.01);
+    _vrCache = Math.sqrt(halfW * halfW + halfH * halfH) + 120;
+  }
+  return _vrCache;
+}
 
 // Pre-rendered static backdrop (radial depth + vignette) — rebuilt only when
 // the canvas size changes. One drawImage per frame instead of per-pixel work.
-let bgCanvas = null;
+// (bgCanvas itself is declared near resize() — see top of file.)
 function makeBackdrop() {
   const w = cv.width, h = cv.height;
   if (!w || !h) return;
@@ -777,6 +910,73 @@ function makeBackdrop() {
   g.fillRect(0, 0, w, h);
 }
 
+// ---------- BAKED SPRITE FACTORIES (one-time cost, then pure drawImage) ----------
+
+// GRID: baked tile + createPattern — replaces ~100 moveTo/lineTo per frame.
+// Re-bakes only when zoom crosses a 3% step (zf quantized in render()).
+let gridPattern = null, gridPatternZoom = -1;
+function bakeGrid(zf) {
+  gridPatternZoom = zf;
+  const step = 120 * zf;                    // 120 world units, scaled
+  const size = Math.max(8, Math.round(step));
+  const t = document.createElement('canvas');
+  t.width = size; t.height = size;
+  const g = t.getContext('2d');
+  g.strokeStyle = 'rgba(90,110,180,0.10)';
+  g.lineWidth = 1;
+  g.beginPath();
+  g.moveTo(0.5, 0); g.lineTo(0.5, size);    // vertical line at tile left edge
+  g.moveTo(0, 0.5); g.lineTo(size, 0.5);    // horizontal line at tile top edge
+  g.stroke();
+  gridPattern = ctx.createPattern(t, 'repeat');
+}
+
+// GLOW: radial gradient baked once per hue bucket — the per-frame
+// createRadialGradient for every boosting worm is gone.
+const glowCache = new Map();
+function glowSprite(hue, boost) {
+  const key = (hue / 15 | 0) * 2 + boost;   // 24 hues x 2 modes
+  let c = glowCache.get(key);
+  if (c) return c;
+  const S = 128;
+  c = document.createElement('canvas');
+  c.width = S; c.height = S;
+  const g = c.getContext('2d');
+  const rg = g.createRadialGradient(S / 2, S / 2, S * 0.06, S / 2, S / 2, S / 2);
+  rg.addColorStop(0, `hsla(${hue},95%,70%,${boost ? 0.40 : 0.22})`);
+  rg.addColorStop(1, 'hsla(0,0%,0%,0)');
+  g.fillStyle = rg;
+  g.fillRect(0, 0, S, S);
+  glowCache.set(key, c);
+  return c;
+}
+
+// NAME TAGS: text rendered once per name+variant to an offscreen canvas —
+// fillText of the same string every frame re-triggers shaping work.
+const nameCache = new Map();
+function nameSprite(name, me) {
+  const key = name + (me ? '\u0001' : '');
+  let c = nameCache.get(key);
+  if (c) return c;
+  const H = 22;
+  const probe = ctx.measureText(name);
+  const W = Math.ceil(probe.width) + 8;
+  c = document.createElement('canvas');
+  c.width = Math.max(2, W); c.height = H;
+  const g = c.getContext('2d');
+  g.font = '13px system-ui, sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillStyle = me ? 'rgba(255,255,255,0.98)' : 'rgba(255,255,255,0.85)';
+  if (me) {
+    g.shadowColor = 'rgba(120,220,160,0.9)';
+    g.shadowBlur = 4;
+  }
+  g.fillText(name, W / 2, H / 2 + 1);
+  nameCache.set(key, c);
+  return c;
+}
+
 function worldToScreen(x, y) {
   return [
     (x - cam.x) * cam.zoom + cv.width / 2,
@@ -794,6 +994,11 @@ function render(now) {
   if (!camPanInit) { camPanX = cam.x; camPanY = cam.y; camPanInit = true; }
   camPanX += (cam.x - camPanX) * 0.22;
   camPanY += (cam.y - camPanY) * 0.22;
+  // PERF: zoom smoothing with real frame delta (frame-rate independent) and a
+  // quantized write — without quantization every frame dirties style/font
+  // caches downstream; 0.3% steps are invisible but hit the fast path.
+  cam.zoom += (cam.targetZoom - cam.zoom) * (1 - Math.exp(-(now - lastFrame + 8) / 220));
+  cam.zoom = (cam.zoom * 333 + 0.5 | 0) / 333;
   const vx = camPanX, vy = camPanY;
 
   ctx.save();
@@ -803,17 +1008,18 @@ function render(now) {
   ctx.scale(cam.zoom, cam.zoom);
   ctx.translate(-vx, -vy);
 
-  // grid
-  const gridStep = 120;
-  const gx0 = Math.floor((vx - cw / 2 / cam.zoom) / gridStep) * gridStep;
-  const gy0 = Math.floor((vy - ch / 2 / cam.zoom) / gridStep) * gridStep;
-  const gx1 = vx + cw / 2 / cam.zoom, gy1 = vy + ch / 2 / cam.zoom;
-  ctx.strokeStyle = 'rgba(90,110,180,0.10)';
-  ctx.lineWidth = 1 / cam.zoom;
-  ctx.beginPath();
-  for (let gx = gx0; gx <= gx1; gx += gridStep) { ctx.moveTo(gx, gy0); ctx.lineTo(gx, gy1); }
-  for (let gy = gy0; gy <= gy1; gy += gridStep) { ctx.moveTo(gx0, gy); ctx.lineTo(gx1, gy); }
-  ctx.stroke();
+  // grid — PATTERN-FILL: one fillRect instead of ~100 moveTo/lineTo segments
+  // per frame. The tile re-bakes only when zoom crosses a 3% step.
+  const zf = (cam.zoom * 32 | 0) / 32;
+  if (gridPatternZoom !== zf) bakeGrid(zf);
+  if (gridPattern) {
+    ctx.fillStyle = gridPattern;
+    const gx0 = vx - cw / 2 / cam.zoom, gy0 = vy - ch / 2 / cam.zoom;
+    ctx.save();
+    ctx.scale(1 / zf, 1 / zf);
+    ctx.fillRect(gx0 * zf, gy0 * zf, (cw / cam.zoom) * zf, (ch / cam.zoom) * zf);
+    ctx.restore();
+  }
 
   // arena border: neon double ring (2 strokes — outer haze + bright core)
   ctx.beginPath();
@@ -827,38 +1033,37 @@ function render(now) {
   ctx.lineWidth = 5 / cam.zoom;
   ctx.stroke();
 
-  // food — EMOJI fruits from a SPRITE CACHE: each emoji is rendered to an
-  // offscreen canvas once, then blitted. Setting ctx.font + fillText for every
-  // food every frame was the #2 lag source (font parse ~hundreds/frame).
-  // Off-screen items are culled cheaply.
+  // food — EMOJI fruits from a SPRITE CACHE with the ground shadow BAKED IN:
+  // exactly one drawImage per food (was two + a globalAlpha state switch).
+  // Off-screen items are culled cheaply. Global alpha batching around the loop
+  // removes per-item state churn.
   const halfW = cw / 2 / cam.zoom + 60, halfH = ch / 2 / cam.zoom + 60;
   viewHalfW = halfW; viewHalfH = halfH;
   const camL = vx - halfW, camR = vx + halfW, camT = vy - halfH, camB = vy + halfH;
   const tSec = now / 1000;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
+  const foodList = foodDrawScratch;
+  foodList.length = 0;
   for (const f of foods.values()) {
     if (f.x < camL || f.x > camR || f.y < camT || f.y > camB) continue;
+    foodList.push(f);
+  }
+  ctx.globalAlpha = 1;
+  for (let fi = 0; fi < foodList.length; fi++) {
+    const f = foodList[fi];
     const pulse = 1 + 0.1 * Math.sin(tSec * 2.2 + f.i % 10);
     const r = f.r * pulse;
     const em = (f.v >= 5) ? '\u2B50' : FOOD_EMOJIS[f.i % FOOD_EMOJIS.length];
-    const s = r * 2.6;
+    const s = r * 2.9;
     const g = emojiSprite(em);
-    ctx.globalAlpha = 0.28; // soft ground shadow — depth cue, zero extra gradient cost
-    ctx.drawImage(g, f.x - s / 2, f.y - s / 2 + r * 0.38, s, s);
-    ctx.globalAlpha = 1;
     ctx.drawImage(g, f.x - s / 2, f.y - s / 2, s, s);
   }
 
-  // pellets — death drops: emoji only, no glow
+  // pellets — death drops: same single-blit baked-shadow sprites
   for (const p of pellets.values()) {
     if (p.x < camL || p.x > camR || p.y < camT || p.y > camB) continue;
     const em = PELLET_EMOJI[p.i % PELLET_EMOJI.length];
-    const s = p.r * 2.4;
+    const s = p.r * 2.7;
     const g = emojiSprite(em);
-    ctx.globalAlpha = 0.25;
-    ctx.drawImage(g, p.x - s / 2, p.y - s / 2 + p.r * 0.4, s, s);
-    ctx.globalAlpha = 1;
     ctx.drawImage(g, p.x - s / 2, p.y - s / 2, s, s);
   }
 
@@ -867,16 +1072,18 @@ function render(now) {
   ctx.textAlign = 'center';
   ctx.font = `${13 / cam.zoom}px system-ui, sans-serif`;
   for (const wm of worms.values()) {
-    const wr = radiusAt(wm.len) + 40;
+    const wr = radiusAtCached(wm.len) + 40;
     if (wm.id !== myId && (wm.x < camL - wr || wm.x > camR + wr || wm.y < camT - wr || wm.y > camB + wr)) continue;
     drawWorm(wm, now);
   }
 
   ctx.restore();
+  ctx.globalAlpha = 1;
 }
 
 // Stroke the preallocated ptsX/ptsY buffer using current stroke settings —
 // zero allocation (old version built a fresh array per layer per worm per frame).
+let dashBucket = -1; // setLineDash state cache — avoid redundant state changes
 function strokePath() {
   ctx.beginPath();
   ctx.moveTo(ptsX[0], ptsY[0]);
@@ -895,13 +1102,15 @@ function strokePathRange(from, to) {
 }
 
 function drawWorm(w, now) {
-  const r = radiusAt(w.len);
+  const r = radiusAtCached(w.len);
+  const r2 = r * 2;
   const h = w.history;
   if (h.length === 0) return;
 
   // Interpolated head position — the whole worm is drawn from here so bodies
-  // glide instead of stepping at snapshot rate.
-  const [hx, hy] = wormInterp(w, now);
+  // glide instead of stepping at snapshot rate. (Zero-alloc: writes _ix/_iy.)
+  wormInterp(w, now);
+  const hx = _ix, hy = _iy;
 
   // Long worm far off-screen? Skip the whole polyline build (history walk is
   // the most expensive part of drawing a giant).
@@ -930,43 +1139,54 @@ function drawWorm(w, now) {
 
   const boostGlow = w.boost ? 1 : 0;
 
+  // ----- QUALITY LOD (set by the perf governor) -----
+  // mode 2 = everything; 1 = drop bands/highlight/tail layers; 0 = outline +
+  // body + eyes only. Tiny worms always skip layers anyway.
+  const lod = perf.mode;
+
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
   // Layer 1: dark outline (slightly wider) for separation from background
   ctx.strokeStyle = w.protect ? `hsla(${w.hue},80%,60%,0.45)` : `hsla(${w.hue},70%,18%,0.9)`;
-  ctx.lineWidth = r * 2 + 5;
+  ctx.lineWidth = r2 + 5;
   strokePath();
 
   // Layer 2: main body (bright core color)
   ctx.strokeStyle = w.protect ? `hsla(${w.hue},80%,60%,0.5)` : `hsl(${w.hue},85%,60%)`;
-  ctx.lineWidth = r * 2;
+  ctx.lineWidth = r2;
   strokePath();
 
-  // Layer 3: dark scale BANDS every ~5th point — segmented, premium look.
-  // One extra path, no allocations: overlay stroke dashes won't follow the
-  // path curve, so we draw a second thinner darker stroke over the body.
-  if (ptsN > 6 && !w.protect) {
+  // Layer 3: dark scale BANDS — dashed stroke over the body. setLineDash is
+  // kept per radius bucket (state change is what costs, not the value) and
+  // the whole layer is skipped for small/far worms and in low quality modes.
+  if (lod > 0 && ptsN > 6 && !w.protect && r > 6) {
+    const bucket = (r | 0);
+    if (dashBucket !== bucket) {
+      dashBucket = bucket;
+      ctx.setLineDash([bucket * 0.9, bucket * 2.6]);
+    }
     ctx.strokeStyle = `hsla(${w.hue},75%,30%,0.35)`;
     ctx.lineWidth = r * 1.05;
-    ctx.setLineDash([r * 0.9, r * 2.6]);
     strokePath();
-    ctx.setLineDash([]);
+    if (dashBucket >= 0) { ctx.setLineDash([]); dashBucket = -1; }
   }
 
-  // Layer 4: highlight stripe along the top edge — round, lit look.
-  if (!w.protect) {
+  // Layer 4: highlight stripe along the top edge — offset path via plain math
+  // (save/translate/restore per worm per frame was measurable).
+  if (lod > 0 && !w.protect && r > 5) {
+    const off = r * 0.45;
+    const ox = Math.cos(w.dir - Math.PI / 2) * off, oy = Math.sin(w.dir - Math.PI / 2) * off;
     ctx.strokeStyle = `hsla(${w.hue},95%,78%,0.35)`;
     ctx.lineWidth = r * 0.8;
-    const off = r * 0.45;
-    ctx.save();
-    ctx.translate(Math.cos(w.dir - Math.PI / 2) * off, Math.sin(w.dir - Math.PI / 2) * off);
-    strokePath();
-    ctx.restore();
+    ctx.beginPath();
+    ctx.moveTo(ptsX[0] + ox, ptsY[0] + oy);
+    for (let i = 1; i < ptsN; i++) ctx.lineTo(ptsX[i] + ox, ptsY[i] + oy);
+    ctx.stroke();
   }
 
   // Tapered tail: two progressively thinner strokes over the last segments.
-  if (ptsN > 12 && !w.protect) {
+  if (lod > 0 && ptsN > 12 && !w.protect) {
     ctx.strokeStyle = `hsl(${w.hue},85%,60%)`;
     ctx.lineWidth = r * 1.25;
     strokePathRange(Math.floor(ptsN * 0.78), ptsN);
@@ -974,17 +1194,14 @@ function drawWorm(w, now) {
     strokePathRange(Math.floor(ptsN * 0.9), ptsN);
   }
 
-  // Head glow — makes YOUR worm (and boosts) pop. One radial gradient per
-  // frame, only when boosting (idle giants skip it).
+  // Head glow — PRE-BAKED sprite per hue bucket: one drawImage instead of a
+  // createRadialGradient (gradient construction was the costliest op in the
+  // whole frame when several worms boost at once).
   if (w.id === myId || w.boost) {
     const gr = r * (w.boost ? 3.2 : 2.2);
-    const gg = ctx.createRadialGradient(hx, hy, r * 0.4, hx, hy, gr);
-    gg.addColorStop(0, `hsla(${w.hue},95%,70%,${w.boost ? 0.4 : 0.22})`);
-    gg.addColorStop(1, 'hsla(0,0%,0%,0)');
-    ctx.fillStyle = gg;
-    ctx.beginPath();
-    ctx.arc(hx, hy, gr, 0, Math.PI * 2);
-    ctx.fill();
+    const gsz = gr * 2;
+    const gcan = glowSprite(w.hue, w.boost ? 1 : 0);
+    ctx.drawImage(gcan, hx - gr, hy - gr, gsz, gsz);
   }
 
   // Boost trail: fading circles at the tail while boosting
@@ -1003,33 +1220,45 @@ function drawWorm(w, now) {
   // Eyes: two symmetric eyes straddling the movement axis (±~55°). The pupils
   // LOOK where the player is pointing (mouse/joystick), smoothly interpolated —
   // other snakes just look where they're heading.
+  // PERF: eyes collapse into a single small circle when the worm on screen is
+  // tiny (er < 3px) or in low quality modes — 8 canvas ops saved per worm.
   if (w.gazeDir === undefined) w.gazeDir = w.dir;
   const gazeTarget = (w.id === myId ? eyeDir() : null) ?? w.dir;
   let gd = gazeTarget - w.gazeDir;
   gd = ((gd + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
   w.gazeDir += gd * 0.2; // smooth gaze swing, no snapping
-  for (const s of [-1, 1]) {
-    const ea = w.dir + s * 0.95;
+  const er = r * 0.36;
+  if (er >= 3 && lod === 2) {
+    for (const s of [-1, 1]) {
+      const ea = w.dir + s * 0.95;
+      const ex = hx + Math.cos(ea) * r * 0.62;
+      const ey = hy + Math.sin(ea) * r * 0.62;
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(ex, ey, er, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.lineWidth = Math.max(1, r * 0.06);
+      ctx.strokeStyle = 'rgba(0,0,0,0.28)';
+      ctx.stroke();
+      // iris + pupil track the gaze direction
+      const px = ex + Math.cos(w.gazeDir) * er * 0.36;
+      const py = ey + Math.sin(w.gazeDir) * er * 0.36;
+      ctx.fillStyle = `hsl(${(w.hue + 40) % 360},90%,42%)`;
+      ctx.beginPath();
+      ctx.arc(px, py, er * 0.55, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#101018';
+      ctx.beginPath();
+      ctx.arc(px + Math.cos(w.gazeDir) * er * 0.14, py + Math.sin(w.gazeDir) * er * 0.14, er * 0.28, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (er >= 1.5) {
+    const ea = w.dir;
     const ex = hx + Math.cos(ea) * r * 0.62;
     const ey = hy + Math.sin(ea) * r * 0.62;
-    const er = r * 0.36;
     ctx.fillStyle = '#fff';
     ctx.beginPath();
     ctx.arc(ex, ey, er, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.lineWidth = Math.max(1, r * 0.06);
-    ctx.strokeStyle = 'rgba(0,0,0,0.28)';
-    ctx.stroke();
-    // iris + pupil track the gaze direction
-    const px = ex + Math.cos(w.gazeDir) * er * 0.36;
-    const py = ey + Math.sin(w.gazeDir) * er * 0.36;
-    ctx.fillStyle = `hsl(${(w.hue + 40) % 360},90%,42%)`;
-    ctx.beginPath();
-    ctx.arc(px, py, er * 0.55, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#101018';
-    ctx.beginPath();
-    ctx.arc(px + Math.cos(w.gazeDir) * er * 0.14, py + Math.sin(w.gazeDir) * er * 0.14, er * 0.28, 0, Math.PI * 2);
     ctx.fill();
   }
 
@@ -1039,8 +1268,8 @@ function drawWorm(w, now) {
   ctx.arc(hx + Math.cos(w.dir) * r * 0.72, hy + Math.sin(w.dir) * r * 0.72, r * 0.16, 0, Math.PI * 2);
   ctx.fill();
 
-  // Spawn protection shimmer ring
-  if (w.protect) {
+  // Spawn protection shimmer ring — skipped in low quality modes
+  if (w.protect && lod > 0) {
     ctx.strokeStyle = `hsla(${w.hue},90%,75%,${0.5 + 0.3 * Math.sin(now / 120)})`;
     ctx.lineWidth = 2.5;
     ctx.beginPath();
@@ -1048,9 +1277,11 @@ function drawWorm(w, now) {
     ctx.stroke();
   }
 
-  // name (font already set once per frame in render())
-  ctx.fillStyle = 'rgba(255,255,255,0.85)';
-  ctx.fillText(w.id === myId ? 'You' : w.name || `W${w.id}`, hx, hy - r - 8 / cam.zoom);
+  // NAME SPRITE: rendered once per name to an offscreen canvas — per-frame
+  // fillText of the same string re-did shaping work. 1:1 world-unit blit
+  // (scaled by zoom only via the world transform).
+  const tag = nameSprite(w.id === myId ? 'You' : (w.name || `W${w.id}`), w.id === myId);
+  ctx.drawImage(tag, hx - tag.width / 2, hy - r - tag.height / 2 - 9 / cam.zoom);
 }
 
 // Food emojis cycled by food id (server sends i, x, y, r, v, h per item)
@@ -1058,18 +1289,28 @@ const FOOD_EMOJIS = ['\uD83C\uDF4E', '\uD83C\uDF4A', '\uD83C\uDF4B', '\uD83C\uDF
 const PELLET_EMOJI = ['\uD83E\uDD69', '\uD83C\uDF67', '\uD83C\uDF6A'];
 
 // PERF: emoji sprite cache — render each emoji ONCE to an offscreen canvas,
-// then drawImage() every frame (GPU blit, no font parsing).
+// then drawImage() every frame (GPU blit, no font parsing). The soft ground
+// shadow is BAKED into the same canvas (radial gradient drawn once at bake
+// time) — the old per-frame shadow blit + globalAlpha switch per food is gone.
 const emojiCache = new Map();
 function emojiSprite(em) {
   let c = emojiCache.get(em);
   if (c) return c;
   c = document.createElement('canvas');
-  c.width = 72; c.height = 72;
+  c.width = 96; c.height = 96;
   const g = c.getContext('2d');
+  // baked ground shadow (bottom area)
+  const sh = g.createRadialGradient(48, 62, 4, 48, 62, 30);
+  sh.addColorStop(0, 'rgba(0,0,0,0.30)');
+  sh.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = sh;
+  g.beginPath();
+  g.ellipse(48, 62, 30, 12, 0, 0, Math.PI * 2);
+  g.fill();
   g.font = '58px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif';
   g.textAlign = 'center';
   g.textBaseline = 'middle';
-  g.fillText(em, 36, 39);
+  g.fillText(em, 48, 42);
   emojiCache.set(em, c);
   return c;
 }
@@ -1082,13 +1323,12 @@ function renderMinimap() {
   mmCtx.arc(s / 2, s / 2, s / 2 - 2, 0, Math.PI * 2);
   mmCtx.fill();
   const scale = (s / 2 - 4) / ARENA_R;
-  const now = performance.now();
+  const now = nowFrame;
   for (const w of worms.values()) {
     const isMe = w.id === myId;
     // interpolated position — dot glides like the worm on screen
-    let px, py;
-    if (w.segAt !== undefined) { [px, py] = wormInterp(w, now); }
-    else { px = w.x; py = w.y; }
+    wormInterp(w, now);
+    const px = _ix, py = _iy;
     mmCtx.fillStyle = isMe ? '#ffffff' : `hsl(${w.hue},80%,55%)`;
     mmCtx.beginPath();
     mmCtx.arc(s / 2 + px * scale, s / 2 + py * scale, isMe ? 3.5 : 2.5, 0, Math.PI * 2);

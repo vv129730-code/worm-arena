@@ -9,6 +9,12 @@ html, body {
   color: #e8ecf5;
   user-select: none;
   -webkit-user-select: none;
+  /* MOBILE: no rubber-band bounce, no double-tap zoom lag, no tap highlight */
+  overscroll-behavior: none;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  position: fixed;
+  width: 100%;
 }
 
 #game {
@@ -34,23 +40,30 @@ html, body {
 body.playing #minimap { opacity: 1; }
 
 /* ---------- portrait rotate hint (mobile) ---------- */
+/* Now a NON-BLOCKING toast (auto-hides, doesn't cover gameplay) */
 #portrait-overlay {
   position: fixed;
-  inset: 0;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 60;
-  background: rgba(7, 9, 16, 0.96);
+  background: rgba(7, 9, 16, 0.92);
+  border: 1px solid rgba(245, 197, 24, 0.4);
+  border-radius: 12px;
+  padding: 10px 18px;
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 10px;
+  pointer-events: none;
 }
-.po-card { text-align: center; color: #dfe5f2; padding: 24px; }
-.po-icon { font-size: 56px; animation: po-tilt 1.6s ease-in-out infinite; }
+.po-card { display: flex; align-items: center; gap: 10px; color: #dfe5f2; padding: 0; }
+.po-icon { font-size: 30px; animation: po-tilt 1.6s ease-in-out infinite; }
 @keyframes po-tilt {
   0%, 100% { transform: rotate(0deg); }
   50% { transform: rotate(-90deg); }
 }
-.po-card h2 { margin: 12px 0 6px; font-size: 22px; letter-spacing: 1px; }
-.po-card p { margin: 0; color: #8fa0c5; font-size: 14px; }
+.po-card h2 { margin: 0; font-size: 14px; letter-spacing: 0.5px; }
+.po-card p { margin: 0; color: #8fa0c5; font-size: 11px; }
 
 .hidden { display: none !important; }
 
@@ -258,6 +271,11 @@ body.touch #room-pill { display: none; }
   letter-spacing: 1px;
   pointer-events: auto;
   touch-action: none;
+}
+/* MOBILE: notch/home-bar safe area — controls never sit under system UI */
+@supports (padding: max(0px)) {
+  #joy-base { left: max(24px, env(safe-area-inset-left)); bottom: max(28px, env(safe-area-inset-bottom)); }
+  #joy-boost { right: max(26px, env(safe-area-inset-right)); bottom: max(44px, env(safe-area-inset-bottom)); }
 }
 #joy-boost:active, #joy-boost.on {
   background: radial-gradient(circle, rgba(255,140,110,0.55), rgba(255,110,80,0.25));
@@ -667,22 +685,47 @@ body.touch .touch-only { display: block; }
 .custom-hue span { min-width: 34px; text-align: right; color: #ffd23f; font-weight: 700; }
 .inv-card .go { width: 100%; }
 
-/* compact screens: everything fits without scroll */
+/* compact screens: everything fits without scroll (NO cut-off options) */
 @media (max-height: 700px), (max-width: 560px) {
-  .lb-hero { padding-top: 58px; }
-  .lb-title { font-size: clamp(30px, 6vw, 46px); }
-  .lb-tag { margin-bottom: 10px; letter-spacing: 3px; }
-  .lb-menu { gap: 8px; }
+  .lb-hero {
+    padding: 54px 5vw 10px;
+    justify-content: flex-start;
+    gap: 0;
+  }
+  .lb-top { position: static; padding: 0 0 6px; }  /* flow with content, not absolute */
+  .lb-title { font-size: clamp(26px, 6.5vw, 40px); margin-bottom: 2px; }
+  .lb-tag { margin-bottom: 8px; letter-spacing: 2px; font-size: 10px; }
+  .lb-menu { gap: 7px; }
   .lb-btn { padding: 9px 14px; font-size: 14px; }
-  .lb-btn.play { font-size: 20px; padding: 11px 16px; }
-  .lb-season { padding: 7px 10px; }
-  .lb-season-snake { font-size: 22px; }
-  .lb-avatar { width: 40px; height: 40px; font-size: 22px; }
-  .lb-currency span { padding: 4px 10px; font-size: 12px; }
-  .lb-joinform { margin-top: 10px; }
-  .lb-joinform input { padding: 9px 12px; font-size: 14px; }
+  .lb-btn.play { font-size: 19px; padding: 10px 14px; }
+  .lb-row2 { gap: 7px; }
+  .lb-row2 .lb-btn { font-size: 13px; padding: 8px 10px; }
+  .lb-joinform { margin-top: 8px; }
+  .lb-joinform input { padding: 8px 12px; font-size: 14px; }
   .lb-name-row input { padding: 9px 12px; font-size: 14px; }
   .lb-online { padding: 8px 9px; font-size: 10px; }
-  .lb-row2 .lb-btn { font-size: 13px; padding: 9px 10px; }
+  .lb-avatar { width: 36px; height: 36px; font-size: 20px; }
+  .lb-pname { font-size: 13px; }
+  .lb-currency span { padding: 4px 9px; font-size: 11px; }
+  .lb-season { display: none; }               /* wasted width on phones */
   .lb-hint { display: none; }
+  .lb-nav { padding: 4px 2px calc(4px + env(safe-area-inset-bottom)); }
+  .lb-nav-btn { font-size: 9px; padding: 7px 3px; }
+}
+
+/* very short landscape phones: shrink chrome further so PLAY always visible */
+@media (max-height: 420px) and (orientation: landscape) {
+  .lb-hero { padding: 44px 6vw 8px; }
+  .lb-top { top: 6px; left: 4vw; right: 4vw; }
+  .lb-avatar { width: 30px; height: 30px; font-size: 16px; border-width: 1px; }
+  .lb-pname { font-size: 11px; }
+  .lb-rank { font-size: 9px; }
+  .lb-currency span { padding: 2px 8px; font-size: 10px; }
+  .lb-title { font-size: clamp(22px, 5vh, 32px); margin-bottom: 1px; }
+  .lb-tag { display: none; }
+  .lb-btn.play { font-size: 16px; padding: 8px 12px; }
+  .lb-row2 .lb-btn { font-size: 12px; padding: 6px 9px; }
+  .lb-name-row input, .lb-joinform input { padding: 7px 10px; font-size: 13px; }
+  .lb-online { padding: 6px 8px; font-size: 9px; }
+  .lb-nav-btn { font-size: 8px; padding: 5px 3px; }
 }

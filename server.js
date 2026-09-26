@@ -33,6 +33,9 @@ const MIME = {
   '.svg': 'image/svg+xml',
 };
 
+// PERF: static files cached in memory (mtime-invalidated) — the old code did
+// fs.readFile for EVERY asset request; client.js is fetched by every player.
+const staticCache = new Map(); // path -> {data, mtimeMs}
 function serveStatic(req, res) {
   let urlPath = decodeURIComponent((req.url || '/').split('?')[0]);
   if (urlPath === '/') urlPath = '/index.html';
@@ -42,15 +45,31 @@ function serveStatic(req, res) {
     res.end('Forbidden');
     return;
   }
-  fs.readFile(filePath, (err, data) => {
+  const ext = path.extname(filePath).toLowerCase();
+  const serve = (data) => {
+    res.writeHead(200, {
+      'Content-Type': MIME[ext] || 'application/octet-stream',
+      'Cache-Control': 'no-cache',
+    });
+    res.end(data);
+  };
+  fs.stat(filePath, (err, st) => {
     if (err) {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('Not found');
       return;
     }
-    const ext = path.extname(filePath).toLowerCase();
-    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
-    res.end(data);
+    const hit = staticCache.get(filePath);
+    if (hit && hit.mtimeMs === st.mtimeMs) { serve(hit.data); return; }
+    fs.readFile(filePath, (err2, data) => {
+      if (err2) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Not found');
+        return;
+      }
+      staticCache.set(filePath, { data, mtimeMs: st.mtimeMs });
+      serve(data);
+    });
   });
 }
 

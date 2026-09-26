@@ -8,7 +8,7 @@ const worldMod = require('./world');
 const World = worldMod.World;
 const {
   newWorm, advance, trimPath, steer, stepHeading,
-  gain, speedAt, radiusAt, clamp,
+  gain, speedAt, radiusAt, clamp, takeRemovedPoints,
 } = worm;
 
 function clampPlayerLimit(n) {
@@ -46,6 +46,12 @@ class Room {
 
     // Event feeds per client (consumed at NET_HZ)
     this.kills = [];               // {tick, killerName, victimName}
+
+    // PERF: reused scratch arrays + cached leaderboard (zero per-tick alloc)
+    this._wormsScratch = [];
+    this._candScratch = [];
+    this._lb = null;
+    this._lbAt = 0;
   }
 
   humanCount() {
@@ -80,12 +86,22 @@ class Room {
     return entry;
   }
 
+  // Remove a dead/gone worm's entries from the incremental body hash (the old
+  // full rebuild did this implicitly every tick).
+  purgeBodyIndex(w) {
+    const pts = w.points;
+    for (let i = 0; i < pts.length; i++) {
+      if (w.ptIns[i]) this.world.removeBodyPoint(w, pts[i][0], pts[i][1]);
+    }
+  }
+
   removeClient(id) {
     const entry = this.clients.get(id);
     if (!entry) return;
     this.clients.delete(id);
     this.clientSync.delete(id);
     entry.worm.dead = true;
+    this.purgeBodyIndex(entry.worm);
     if (!entry.isBot) {
       this.broadcast({ t: 'chat', name: 'SYSTEM', text: `${entry.name} left the arena`, hue: null });
     }
@@ -193,7 +209,22 @@ class Room {
 
       const sp = speedAt(w.len) * (w.boosting ? CFG.BOOST_MULT : 1);
       advance(w, sp * dt);
+
+      // PERF: INCREMENTAL body index — insert only the path points laid this
+      // tick (~0-5/worm) instead of rebuilding every worm's full body (~500+
+      // points) every tick at 30Hz. Identical coverage to the old rebuild.
+      const bodyHash = this.world.bodyHash;
+      const pts = w.points;
+      for (let i = pts.length - 1; i >= 0 && w.ptIns[i] === 0; i--) {
+        bodyHash.insert(w, pts[i][0], pts[i][1]);
+        w.ptIns[i] = 1;
+      }
       trimPath(w);
+      // drop trimmed tail points out of the hash (exact, flag-driven)
+      const rem = takeRemovedPoints();
+      for (let i = 0; i < rem.points.length; i++) {
+        if (rem.flags[i]) this.world.removeBodyPoint(w, rem.points[i][0], rem.points[i][1]);
+      }
 
       // arena wall
       const d = Math.hypot(w.x, w.y);
@@ -202,44 +233,52 @@ class Room {
       }
     }
 
-    // 2) Body index + head collisions
-    this.world.buildBodyIndex([...this.clients.values()].map((c) => c.worm));
+    // 2) Head collisions against the incrementally maintained body index.
+    // PERF: worm array + collision scratch built once (was two [...clients]
+    // spreads + .map() per worm per tick).
+    const wormsArr = this._wormsScratch;
+    wormsArr.length = 0;
+    for (const c of this.clients.values()) wormsArr.push(c.worm);
     for (const c of this.clients.values()) {
       const w = c.worm;
       if (w.dead) continue;
-      const hit = this.world.collideHead(w, [...this.clients.values()].map((x) => x.worm), this.world.bodyHash);
+      const hit = this.world.collideHead(w, wormsArr, this.world.bodyHash);
       if (hit && w.protectT <= 0) {
         this.killWorm(w, hit, drops);
         // award score to killer via kill feed (len already gained in killWorm)
       }
     }
 
-    // 3) Eating (food + pellets) near each head
-    const foodHash = this.world.rebuildFoodHash();
-    const pelHash = this.world.rebuildPelletHash();
+    // 3) Eating (food + pellets) near each head — hashes are maintained
+    // incrementally now (spawn/eat/expire), so the old per-tick full rebuilds
+    // (2600+ food inserts x 30Hz) are gone.
+    const foodHash = this.world.foodHash;
+    const pelHash = this.world.pelletHash;
+    const cand = this._candScratch;
     for (const c of this.clients.values()) {
       const w = c.worm;
       if (w.dead) continue;
       const reach = radiusAt(w.len) + 30;
-      const cand = [];
+      const reach2 = reach * reach;
       foodHash.queryCircle(w.x, w.y, reach, cand);
       for (const f of cand) {
         if (f.dead) continue;
-        if (Math.hypot(f.x - w.x, f.y - w.y) < reach) {
+        const dx = f.x - w.x, dy = f.y - w.y;
+        if (dx * dx + dy * dy < reach2) {
           f.dead = true;
-          this.world.food.delete(f.id);
+          this.world.removeFood(f);
           this.foodDelRecent.push(f.id); // global delete broadcast
           gain(w, f.v);
-          this.world.spawnFood();
+          this.world.spawnFood(); // re-inserts itself into the hash
         }
       }
-      cand.length = 0;
       pelHash.queryCircle(w.x, w.y, reach, cand);
       for (const p of cand) {
         if (p.dead) continue;
-        if (Math.hypot(p.x - w.x, p.y - w.y) < reach) {
+        const dx = p.x - w.x, dy = p.y - w.y;
+        if (dx * dx + dy * dy < reach2) {
           p.dead = true;
-          this.world.pellets.delete(p.id);
+          this.world.removePellet(p);
           gain(w, p.v);
         }
       }
@@ -251,6 +290,7 @@ class Room {
     // 5) Remove dead worms from the room (clients already got death info via snapshot events)
     for (const [id, c] of this.clients) {
       if (c.worm.dead) {
+        this.purgeBodyIndex(c.worm);
         if (!c.isBot && c.ws && c.ws.readyState === 1) {
           try { c.ws.send(JSON.stringify({ t: 'died', by: this.lastKillerOf(c.worm) })); } catch (e) { /* ignore */ }
         }
@@ -270,6 +310,9 @@ class Room {
   }
 
   leaderboard() {
+    // PERF: cached for ~8 ticks (~266ms) — building + sorting the array at
+    // 20Hz snapshot rate was redundant; it changes at most a few times/sec.
+    if (this._lb && this.tickNum - this._lbAt < 8) return this._lb;
     const arr = [...this.clients.values()].map((c) => ({
       id: c.worm.id,
       name: c.name,
@@ -278,7 +321,10 @@ class Room {
       hue: c.worm.hue,
     }));
     arr.sort((a, b) => b.score - a.score);
-    return arr.slice(0, 10);
+    const top = arr.slice(0, 10);
+    this._lb = top;
+    this._lbAt = this.tickNum;
+    return top;
   }
 
   broadcastSnapshot() {
@@ -307,13 +353,21 @@ class Room {
 
     const lb = this.leaderboard();
 
+    // PERF: per-BROADCAST hoisted work (was re-computed per client):
+    // drops mapping, kills tail, global delete list.
+    const killsTail = this.kills.slice(-5);
+    const newPellets = new Array(drops.length);
+    for (let i = 0; i < drops.length; i++) {
+      const p = drops[i];
+      newPellets[i] = { i: p.id, x: Math.round(p.x), y: Math.round(p.y), r: Math.round(p.r), v: p.v, h: p.hue };
+    }
+
     for (const [id, c] of this.clients) {
       if (c.isBot || !c.ws || c.ws.readyState !== 1) continue;
       const sync = this.clientSync.get(id);
       if (!sync) continue;
 
-      // Drops (new pellets) go to everyone
-      const newPellets = drops.map((p) => ({ i: p.id, x: Math.round(p.x), y: Math.round(p.y), r: Math.round(p.r), v: p.v, h: p.hue }));
+      // Drops (new pellets) go to everyone — hoisted above
 
       // Delta food: send food within view the client hasn't seen yet, then
       // FORGET ids beyond view so returning to an area re-delivers its food
@@ -343,7 +397,7 @@ class Room {
         if (dx * dx + dy * dy > view2) seen.delete(fid);
       }
       // Deletes = every food removed since the last broadcast (global)
-      const foodRemove = [...globalFoodDel];
+      const foodRemove = globalFoodDel; // shared, never mutated here
       for (const fid of globalFoodDel) seen.delete(fid);
       // Safety bound (in-view set is naturally ~2k max; this should rarely hit)
       if (seen.size > 6000) seen.clear();
@@ -369,7 +423,7 @@ class Room {
         pellets,
         pelNew: newPellets,
         lb,
-        kills: this.kills.slice(-5),
+        kills: killsTail,
       };
       try { c.ws.send(JSON.stringify(snap)); } catch (e) { /* ignore */ }
     }
